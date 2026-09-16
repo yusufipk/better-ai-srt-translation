@@ -773,6 +773,7 @@ function downloadResult() {
 function getLanguageCode(language) {
     const codes = {
         'Turkish': 'TR',
+        'English': 'EN',
         'Spanish': 'ES',
         'French': 'FR',
         'German': 'DE',
