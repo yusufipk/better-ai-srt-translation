@@ -13,6 +13,14 @@ Translate `.srt` subtitle files with Gemini (Google AI Studio), any model on Ope
 
 The default model is `gemini-3.1-flash-lite` (`google/gemini-3.1-flash-lite` on OpenRouter). Leave Parallel requests at 5 on the Gemini free tier to stay under its rate limit; paid keys can go higher. Rate-limited requests wait out the cooldown Google reports and retry on their own.
 
+## Command line
+
+For a file or a whole folder of `.srt` files, use the CLI (Node.js 18 or newer, no dependencies). Run it with `--help` for the other providers and options.
+
+```
+GEMINI_API_KEY=... node scripts/translate-srt.mjs --input ./subtitles --language Turkish
+```
+
 ## How it keeps timing
 
 Subtitles split sentences across blocks, and languages order words differently, so translating block by block lets text drift into the wrong timestamp. The app tags each block with a marker before sending it:

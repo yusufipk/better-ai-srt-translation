@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Command-line version of the web app. Parsing, chunking, the system prompt,
+// marker handling and RTL formatting mirror src/app.js; keep them in sync.
+
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -7,12 +10,39 @@ import { fileURLToPath } from 'node:url';
 
 const DEFAULT_MODEL_GEMINI = 'gemini-3.1-flash-lite';
 const DEFAULT_MODEL_OPENROUTER = 'google/gemini-3.1-flash-lite';
+const PROVIDERS = ['gemini', 'openrouter', 'openai'];
+const API_KEY_ENV = { gemini: 'GEMINI_API_KEY', openrouter: 'OPENROUTER_API_KEY', openai: 'OPENAI_API_KEY' };
 const DEFAULT_CHUNK_SIZE = 20;
 const DEFAULT_PARALLEL = 5;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 30000;
+// Self-hosted servers often run one request at a time, so queued chunks wait longer.
+const CUSTOM_SERVER_TIMEOUT_MS = 120000;
 const OPENROUTER_REFERER = 'https://github.com/yusufipk/better-ai-srt-translation';
+
+// Returns the chat completions URL for a base URL such as ".../v1", or null if
+// it is not an http(s) URL. Same rules as chatCompletionsUrl() in src/app.js.
+export function chatCompletionsUrl(baseUrl) {
+    let input = baseUrl.trim();
+    // Allow "localhost:11434/v1" without a scheme, but only for this machine,
+    // so a remote server is never silently reached over plain http.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input) && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(input)) {
+        input = `http://${input}`;
+    }
+    let url;
+    try {
+        url = new URL(input);
+    } catch {
+        return null;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    // Keys go in --api-key or OPENAI_API_KEY, never in the URL where logs would show them.
+    if (url.username || url.password) return null;
+    const pathname = url.pathname.replace(/\/+$/, '');
+    url.pathname = pathname.endsWith('/chat/completions') ? pathname : `${pathname}/chat/completions`;
+    return url.toString();
+}
 
 export function parseSRT(content) {
     const blocks = [];
@@ -163,11 +193,12 @@ export function formatTranslatedText(text, targetLanguage) {
 }
 
 class APIError extends Error {
-    constructor(status, message, details = null) {
+    constructor(status, message, details = null, retryAfterSeconds = null) {
         super(message);
         this.name = 'APIError';
         this.status = status;
         this.details = details;
+        this.retryAfterSeconds = retryAfterSeconds;
     }
 }
 
@@ -178,7 +209,7 @@ function sleep(milliseconds) {
 function getRetryDelay(error, attempt) {
     if (error.status !== 429) return RETRY_DELAY_MS * (2 ** (attempt - 1));
 
-    let retrySeconds = 60;
+    let retrySeconds = error.retryAfterSeconds ?? 60;
     if (Array.isArray(error.details)) {
         const retryInfo = error.details.find((item) => (
             item['@type'] === 'type.googleapis.com/google.rpc.RetryInfo'
@@ -189,14 +220,14 @@ function getRetryDelay(error, attempt) {
     return (retrySeconds + 2) * 1000;
 }
 
-async function fetchWithTimeout(url, options) {
+async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
         return await fetch(url, { ...options, signal: controller.signal });
     } catch (error) {
         if (error.name === 'AbortError') {
-            throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+            throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
         }
         throw error;
     } finally {
@@ -205,20 +236,25 @@ async function fetchWithTimeout(url, options) {
 }
 
 async function translateChunk(chunk, index, options) {
-    const { apiKey, model, targetLanguage, customInstructions, provider } = options;
+    const { apiKey, model, targetLanguage, customInstructions, provider, endpoint } = options;
     const markedText = extractTextWithMarkers(chunk);
     const systemPrompt = buildSystemPrompt(targetLanguage, customInstructions);
+    const openAIStyle = provider !== 'gemini';
     let response;
 
-    if (provider === 'openrouter') {
-        response = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+    if (openAIStyle) {
+        const headers = { 'Content-Type': 'application/json' };
+        // Self-hosted servers often run without auth; send a key only if one is set.
+        if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+        if (provider === 'openrouter') {
+            headers['HTTP-Referer'] = OPENROUTER_REFERER;
+            headers['X-Title'] = 'Better AI SRT Translation';
+        }
+        const url = provider === 'openrouter' ? 'https://openrouter.ai/api/v1/chat/completions' : endpoint;
+        const timeoutMs = provider === 'openai' ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+        response = await fetchWithTimeout(url, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${apiKey}`,
-                'HTTP-Referer': OPENROUTER_REFERER,
-                'X-Title': 'Better AI SRT Translation'
-            },
+            headers,
             body: JSON.stringify({
                 model,
                 messages: [
@@ -227,19 +263,21 @@ async function translateChunk(chunk, index, options) {
                 ],
                 temperature: 0.3
             })
-        });
+        }, timeoutMs);
     } else {
         response = await fetchWithTimeout(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
             {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                // The header keeps the key out of URLs that proxies and error reports may log.
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
                 body: JSON.stringify({
                     contents: [{ role: 'user', parts: [{ text: markedText }] }],
                     systemInstruction: { parts: [{ text: systemPrompt }] },
                     generationConfig: { temperature: 0.3 }
                 })
-            }
+            },
+            REQUEST_TIMEOUT_MS
         );
     }
 
@@ -256,11 +294,14 @@ async function translateChunk(chunk, index, options) {
         } catch {
             // Keep the plain-text response as the error message.
         }
-        throw new APIError(response.status, `Chunk ${index + 1}: ${message}`, details);
+        // OpenAI-style servers announce rate-limit cooldowns in Retry-After (seconds).
+        const retryAfter = Number.parseFloat(response.headers.get('retry-after'));
+        throw new APIError(response.status, `Chunk ${index + 1}: ${message}`, details,
+            Number.isFinite(retryAfter) ? retryAfter : null);
     }
 
     const data = await response.json();
-    const translatedText = provider === 'openrouter'
+    const translatedText = openAIStyle
         ? data.choices?.[0]?.message?.content
         : data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!translatedText) {
@@ -329,7 +370,7 @@ function parseArgs(argv) {
         overwrite: false
     };
     const valueOptions = new Set([
-        '--input', '--output', '--api-key', '--provider', '--model',
+        '--input', '--output', '--api-key', '--provider', '--model', '--base-url',
         '--language', '--target-language', '--chunk-size', '--parallel', '--instructions'
     ]);
 
@@ -362,9 +403,11 @@ Options:
   --input <path>              An .srt file or directory containing .srt files (required)
   --output <directory>        Output directory (default: translated)
   --language <name>           Target language, for example Turkish (required)
-  --provider <name>           gemini or openrouter (default: gemini)
-  --model <name>              Model name (provider-specific default is used when omitted)
-  --api-key <key>             API key (prefer GEMINI_API_KEY or OPENROUTER_API_KEY)
+  --provider <name>           gemini, openrouter or openai (default: gemini)
+  --base-url <url>            Server for --provider openai, e.g. http://localhost:11434/v1
+  --model <name>              Model name (required for openai, otherwise a default is used)
+  --api-key <key>             API key (prefer GEMINI_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY;
+                              optional for openai). Use https for any server not on this machine.
   --chunk-size <number>       Subtitle blocks per request (default: 20)
   --parallel <number>         Concurrent requests (default: 5)
   --instructions <text>       Additional translation instructions
@@ -374,6 +417,7 @@ Options:
 Examples:
   GEMINI_API_KEY=... node scripts/translate-srt.mjs --input ./subs --output ./translated --language Turkish
   OPENROUTER_API_KEY=... node scripts/translate-srt.mjs --input movie.srt --language Turkish --provider openrouter
+  node scripts/translate-srt.mjs --input movie.srt --language Turkish --provider openai --base-url localhost:11434/v1 --model llama3.1
 `);
 }
 
@@ -403,17 +447,44 @@ async function main() {
     if (!args.input) throw new Error('--input is required');
     if (!args.language && !args.targetLanguage) throw new Error('--language is required');
     const targetLanguage = args.language || args.targetLanguage;
-    if (!['gemini', 'openrouter'].includes(args.provider)) throw new Error('--provider must be gemini or openrouter');
+    if (!PROVIDERS.includes(args.provider)) throw new Error(`--provider must be one of: ${PROVIDERS.join(', ')}`);
 
-    const envKey = args.provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'GEMINI_API_KEY';
+    const envKey = API_KEY_ENV[args.provider];
     const apiKey = (args.apiKey || process.env[envKey] || '').trim();
-    if (!apiKey) throw new Error(`An API key is required. Use --api-key or ${envKey}.`);
+    let endpoint = null;
+    let model = args.model;
+    if (args.provider === 'openai') {
+        if (!args.baseUrl) throw new Error('--base-url is required with --provider openai');
+        endpoint = chatCompletionsUrl(args.baseUrl);
+        if (!endpoint) throw new Error('--base-url must be an http(s) URL without a username or password');
+        if (!model) throw new Error('--model is required with --provider openai');
+    } else {
+        if (!apiKey) throw new Error(`An API key is required. Use --api-key or ${envKey}.`);
+        model ||= args.provider === 'openrouter' ? DEFAULT_MODEL_OPENROUTER : DEFAULT_MODEL_GEMINI;
+    }
 
-    const model = args.model || (args.provider === 'openrouter' ? DEFAULT_MODEL_OPENROUTER : DEFAULT_MODEL_GEMINI);
     const inputFiles = await getInputFiles(path.resolve(args.input));
     if (inputFiles.length === 0) throw new Error('No .srt files found in the input path');
     const outputDirectory = path.resolve(args.output);
+    const outputFor = (inputFile) => path.join(
+        outputDirectory,
+        `${path.basename(inputFile, path.extname(inputFile))}_${languageSlug(targetLanguage)}.srt`
+    );
+
+    // Check every output path before the first request, so a batch never pays
+    // for translations it then refuses to save.
+    if (!args.overwrite) {
+        for (const inputFile of inputFiles) {
+            const outputFile = outputFor(inputFile);
+            const exists = await stat(outputFile).then(() => true, (error) => {
+                if (error.code === 'ENOENT') return false;
+                throw error;
+            });
+            if (exists) throw new Error(`Output already exists: ${outputFile}. Use --overwrite to replace it.`);
+        }
+    }
     await mkdir(outputDirectory, { recursive: true });
+    if (endpoint) console.log(`Sending requests to ${endpoint}`);
 
     let totalFailed = 0;
     for (const inputFile of inputFiles) {
@@ -428,21 +499,13 @@ async function main() {
             apiKey,
             model,
             provider: args.provider,
+            endpoint,
             targetLanguage,
             customInstructions: args.instructions,
             chunkSize: args.chunkSize,
             parallel: args.parallel
         });
-        const outputName = `${path.basename(inputFile, path.extname(inputFile))}_${languageSlug(targetLanguage)}.srt`;
-        const outputFile = path.join(outputDirectory, outputName);
-        if (!args.overwrite) {
-            try {
-                await stat(outputFile);
-                throw new Error(`Output already exists: ${outputFile}. Use --overwrite to replace it.`);
-            } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
-            }
-        }
+        const outputFile = outputFor(inputFile);
         await writeFile(outputFile, `${result.srt}\n`, 'utf8');
         console.log(`  Saved ${outputFile}`);
         totalFailed += result.failed;

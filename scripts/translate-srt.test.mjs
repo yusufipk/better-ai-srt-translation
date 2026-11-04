@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
     blocksToSRT,
+    chatCompletionsUrl,
     createSmartChunks,
     formatTranslatedText,
     parseSRT
@@ -38,4 +39,13 @@ test('formats RTL punctuation and direction markers', () => {
     assert.match(result, /،/);
     assert.match(result, /؟/);
     assert.match(result, /\u202C$/);
+});
+
+test('builds the chat completions URL for a custom server', () => {
+    assert.equal(chatCompletionsUrl('localhost:11434/v1'), 'http://localhost:11434/v1/chat/completions');
+    assert.equal(chatCompletionsUrl('https://api.example.com/v1/'), 'https://api.example.com/v1/chat/completions');
+    assert.equal(chatCompletionsUrl('https://api.example.com/v1/chat/completions?x=1'), 'https://api.example.com/v1/chat/completions?x=1');
+    assert.equal(chatCompletionsUrl('api.example.com/v1'), null);
+    assert.equal(chatCompletionsUrl('https://user:pass@api.example.com/v1'), null);
+    assert.equal(chatCompletionsUrl('file:///etc/passwd'), null);
 });
