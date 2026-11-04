@@ -1,6 +1,8 @@
-/* Light by default, dark follows the system setting. The one accent is the
-   classic subtitle yellow; everything else stays neutral. */
+/* Light by default. src/theme.js sets data-theme on <html> from the saved
+   choice or the system setting, so the dark values live in one block. The one
+   accent is the classic subtitle yellow; everything else stays neutral. */
 :root {
+    color-scheme: light;
     --bg: #f4f4f1;
     --surface: #ffffff;
     --surface-sunk: #ecece8;
@@ -15,24 +17,25 @@
     --track: #cfcfc8;
     --knob: #ffffff;
     --focus: #1c1d20;
+    --shadow: rgba(0, 0, 0, 0.14);
     --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #16181b;
-        --surface: #1e2125;
-        --surface-sunk: #121417;
-        --text: #ebebe7;
-        --muted: #9a9ea6;
-        --line: #2f3338;
-        --ok: #5cc27e;
-        --error: #f07a63;
-        --on-error: #1c1d20;
-        --track: #4a4f56;
-        --knob: #c9cbcf;
-        --focus: #f5c400;
-    }
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #16181b;
+    --surface: #1e2125;
+    --surface-sunk: #121417;
+    --text: #ebebe7;
+    --muted: #9a9ea6;
+    --line: #2f3338;
+    --ok: #5cc27e;
+    --error: #f07a63;
+    --on-error: #1c1d20;
+    --track: #4a4f56;
+    --knob: #c9cbcf;
+    --focus: #f5c400;
+    --shadow: rgba(0, 0, 0, 0.45);
 }
 
 * {
@@ -83,15 +86,38 @@ h1 {
     margin-top: 0.25rem;
 }
 
-.repo-link {
+.topbar-actions {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.icon-button {
     color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
     display: inline-flex;
     padding: 0.4rem;
     border-radius: 8px;
 }
 
-.repo-link:hover {
+.icon-button:hover {
     color: var(--text);
+}
+
+.icon-button:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+/* The toggle shows the theme it switches to. */
+#themeToggle .icon-sun,
+#themeToggle[data-next="light"] .icon-moon {
+    display: none;
+}
+
+#themeToggle[data-next="light"] .icon-sun {
+    display: block;
 }
 
 /* Two columns on wide screens: settings on the left, the file and its
@@ -632,7 +658,7 @@ textarea.control {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 10px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+    box-shadow: 0 10px 28px var(--shadow);
 }
 
 .dropdown.drop-up .dropdown-list {
@@ -667,8 +693,3 @@ textarea.control {
     background: var(--subtitle);
 }
 
-@media (prefers-color-scheme: dark) {
-    .dropdown-list {
-        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-    }
-}
