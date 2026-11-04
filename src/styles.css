@@ -110,13 +110,14 @@ h1 {
     outline-offset: 2px;
 }
 
-/* The toggle shows the theme it switches to. */
+/* The toggle shows the theme it switches to. Keyed on data-theme, which
+   theme.js sets in <head>, so the right icon shows from the first paint. */
 #themeToggle .icon-sun,
-#themeToggle[data-next="light"] .icon-moon {
+:root[data-theme="dark"] #themeToggle .icon-moon {
     display: none;
 }
 
-#themeToggle[data-next="light"] .icon-sun {
+:root[data-theme="dark"] #themeToggle .icon-sun {
     display: block;
 }
 
@@ -265,11 +266,22 @@ textarea.control {
     transition: opacity 0.12s ease, visibility 0.12s;
 }
 
-.hint-button:hover ~ .hint-text,
 .hint-button:focus-visible ~ .hint-text,
 .toggle-row.hint-open .hint-text {
     visibility: visible;
     opacity: 1;
+}
+
+/* Only real pointers hover: touch browsers keep :hover on the last tapped
+   element, which would stop a second tap from closing the tooltip. The
+   tooltip itself counts too, so the text can be read and selected; the short
+   visibility transition carries the pointer across the gap. */
+@media (hover: hover) {
+    .hint-button:hover ~ .hint-text,
+    .hint-text:hover {
+        visibility: visible;
+        opacity: 1;
+    }
 }
 
 .toggle-row.hint-dismissed .hint-text {

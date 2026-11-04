@@ -36,7 +36,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateButton() {
         const next = currentTheme() === 'dark' ? 'light' : 'dark';
-        button.dataset.next = next;
         button.setAttribute('aria-label', `Switch to ${next} theme`);
         button.title = `Switch to ${next} theme`;
     }
