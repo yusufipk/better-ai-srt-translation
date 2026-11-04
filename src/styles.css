@@ -386,6 +386,42 @@ textarea.control {
     opacity: 0.9;
 }
 
+.btn-ghost {
+    padding: 0.55rem 0.75rem;
+    font-size: 0.85rem;
+    font-weight: 550;
+    background: var(--surface-sunk);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.btn-ghost:hover {
+    border-color: var(--muted);
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+/* Settings file */
+
+.file-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+}
+
+.settings-file-status {
+    font-size: 0.85rem;
+    color: var(--ok);
+}
+
+.settings-file-status.error {
+    color: var(--error);
+}
+
 /* Progress */
 
 .progress {
