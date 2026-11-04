@@ -1,6 +1,8 @@
-/* Light by default, dark follows the system setting. The one accent is the
-   classic subtitle yellow; everything else stays neutral. */
+/* Light by default. src/theme.js sets data-theme on <html> from the saved
+   choice or the system setting, so the dark values live in one block. The one
+   accent is the classic subtitle yellow; everything else stays neutral. */
 :root {
+    color-scheme: light;
     --bg: #f4f4f1;
     --surface: #ffffff;
     --surface-sunk: #ecece8;
@@ -15,24 +17,25 @@
     --track: #cfcfc8;
     --knob: #ffffff;
     --focus: #1c1d20;
+    --shadow: rgba(0, 0, 0, 0.14);
     --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #16181b;
-        --surface: #1e2125;
-        --surface-sunk: #121417;
-        --text: #ebebe7;
-        --muted: #9a9ea6;
-        --line: #2f3338;
-        --ok: #5cc27e;
-        --error: #f07a63;
-        --on-error: #1c1d20;
-        --track: #4a4f56;
-        --knob: #c9cbcf;
-        --focus: #f5c400;
-    }
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #16181b;
+    --surface: #1e2125;
+    --surface-sunk: #121417;
+    --text: #ebebe7;
+    --muted: #9a9ea6;
+    --line: #2f3338;
+    --ok: #5cc27e;
+    --error: #f07a63;
+    --on-error: #1c1d20;
+    --track: #4a4f56;
+    --knob: #c9cbcf;
+    --focus: #f5c400;
+    --shadow: rgba(0, 0, 0, 0.45);
 }
 
 * {
@@ -83,15 +86,39 @@ h1 {
     margin-top: 0.25rem;
 }
 
-.repo-link {
+.topbar-actions {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.icon-button {
     color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
     display: inline-flex;
     padding: 0.4rem;
     border-radius: 8px;
 }
 
-.repo-link:hover {
+.icon-button:hover {
     color: var(--text);
+}
+
+.icon-button:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+/* The toggle shows the theme it switches to. Keyed on data-theme, which
+   theme.js sets in <head>, so the right icon shows from the first paint. */
+#themeToggle .icon-sun,
+:root[data-theme="dark"] #themeToggle .icon-moon {
+    display: none;
+}
+
+:root[data-theme="dark"] #themeToggle .icon-sun {
+    display: block;
 }
 
 /* Two columns on wide screens: settings on the left, the file and its
@@ -189,6 +216,77 @@ textarea.control {
     cursor: pointer;
     user-select: none;
     width: fit-content;
+}
+
+/* A toggle with a small clock button whose tooltip explains what it does.
+   The tooltip spans the row, so it always fits inside the settings column. */
+.toggle-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.hint-button {
+    display: inline-flex;
+    padding: 0.25rem;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    cursor: help;
+}
+
+.hint-button:hover,
+.toggle-row.hint-open .hint-button {
+    color: var(--text);
+}
+
+.hint-button:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+.hint-text {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 5;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 8px 22px var(--shadow);
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.12s ease, visibility 0.12s;
+}
+
+.hint-button:focus-visible ~ .hint-text,
+.toggle-row.hint-open .hint-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Only real pointers hover: touch browsers keep :hover on the last tapped
+   element, which would stop a second tap from closing the tooltip. The
+   tooltip itself counts too, so the text can be read and selected; the short
+   visibility transition carries the pointer across the gap. */
+@media (hover: hover) {
+    .hint-button:hover ~ .hint-text,
+    .hint-text:hover {
+        visibility: visible;
+        opacity: 1;
+    }
+}
+
+.toggle-row.hint-dismissed .hint-text {
+    visibility: hidden;
+    opacity: 0;
 }
 
 .toggle input {
@@ -632,7 +730,7 @@ textarea.control {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 10px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+    box-shadow: 0 10px 28px var(--shadow);
 }
 
 .dropdown.drop-up .dropdown-list {
@@ -667,8 +765,3 @@ textarea.control {
     background: var(--subtitle);
 }
 
-@media (prefers-color-scheme: dark) {
-    .dropdown-list {
-        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-    }
-}

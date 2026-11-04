@@ -343,6 +343,8 @@ function setupEventListeners() {
         reprocessLoadedFile();
     });
 
+    setupHints();
+
     // Actions
     elements.translateBtn.addEventListener('click', startTranslation);
     elements.downloadBtn.addEventListener('click', downloadResult);
@@ -353,6 +355,42 @@ function setupEventListeners() {
     // Initial UI state
     updateTranslateButton();
     updateTranslateButtonText();
+}
+
+// Clock buttons next to the timing toggles. Hover and keyboard focus show the
+// tooltip through CSS; a click or tap pins it open (touch has no hover, and
+// Safari does not focus buttons on click). Escape hides a visible tooltip
+// until the pointer leaves or focus moves.
+function setupHints() {
+    const rows = Array.from(document.querySelectorAll('.toggle-row'));
+    const isShown = (row) => {
+        const button = row.querySelector('.hint-button');
+        return row.classList.contains('hint-open') || button.matches(':hover') || button.matches(':focus-visible');
+    };
+    rows.forEach(row => {
+        const button = row.querySelector('.hint-button');
+        button.addEventListener('click', () => {
+            row.classList.remove('hint-dismissed');
+            row.classList.toggle('hint-open');
+        });
+        button.addEventListener('focus', () => row.classList.remove('hint-dismissed'));
+        button.addEventListener('blur', () => row.classList.remove('hint-open', 'hint-dismissed'));
+        row.addEventListener('mouseleave', () => row.classList.remove('hint-dismissed'));
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        rows.filter(isShown).forEach(row => {
+            row.classList.remove('hint-open');
+            row.classList.add('hint-dismissed');
+        });
+    });
+    document.addEventListener('pointerdown', (e) => {
+        rows.forEach(row => {
+            if (row.classList.contains('hint-open') && !row.querySelector('.hint-button').contains(e.target)) {
+                row.classList.remove('hint-open');
+            }
+        });
+    });
 }
 
 function handleDragOver(e) {
