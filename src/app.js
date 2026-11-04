@@ -13,6 +13,9 @@ const RETRY_DELAY_MS = 1000;  // 1 second
 const REQUEST_TIMEOUT_MS = 30000;  // 30 seconds
 // Self-hosted servers often run one request at a time, so queued chunks wait longer.
 const CUSTOM_SERVER_TIMEOUT_MS = 120000;  // 2 minutes
+const SETTINGS_FILE_FORMAT = 'better-ai-srt-translation-settings';
+const SETTINGS_FILE_VERSION = 1;
+const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
 
 // Custom API Error class to propagate status and detailed payload
 class APIError extends Error {
@@ -30,6 +33,8 @@ let srtBlocks = [];
 let translatedResult = '';
 let originalFileName = '';
 let isTranslating = false;
+let dropdowns = [];
+let settingsStatusTimer = null;
 
 // DOM Elements
 const elements = {
@@ -59,7 +64,11 @@ const elements = {
     mergeSubtitles: document.getElementById('mergeSubtitles'),
     apiProvider: document.getElementById('apiProvider'),
     apiBaseUrl: document.getElementById('apiBaseUrl'),
-    baseUrlField: document.getElementById('baseUrlField')
+    baseUrlField: document.getElementById('baseUrlField'),
+    exportSettingsBtn: document.getElementById('exportSettingsBtn'),
+    importSettingsBtn: document.getElementById('importSettingsBtn'),
+    settingsFileInput: document.getElementById('settingsFileInput'),
+    settingsFileStatus: document.getElementById('settingsFileStatus')
 };
 
 // ============================================
@@ -68,8 +77,7 @@ const elements = {
 
 function init() {
     loadSavedSettings();
-    enhanceSelect(elements.apiProvider);
-    enhanceSelect(elements.targetLanguage);
+    dropdowns = [enhanceSelect(elements.apiProvider), enhanceSelect(elements.targetLanguage)];
     updateProviderUI();
     setupEventListeners();
 }
@@ -116,7 +124,7 @@ function loadSavedSettings() {
     if (savedChunkSize) elements.chunkSize.value = savedChunkSize.trim();
     if (savedParallel) elements.parallelRequests.value = savedParallel.trim();
     else elements.parallelRequests.value = DEFAULT_PARALLEL;
-    if (savedInstructions) elements.customInstructions.value = savedInstructions;
+    elements.customInstructions.value = savedInstructions || '';
     
     if (savedOptimize !== null) elements.optimizeTimings.checked = savedOptimize === 'true';
     else elements.optimizeTimings.checked = false; // Default to false (disabled) to avoid messing up original timings
@@ -153,6 +161,131 @@ function saveSettings() {
     localStorage.setItem('srt_custom_instructions', elements.customInstructions.value);
     localStorage.setItem('srt_optimize_timings', elements.optimizeTimings.checked);
     localStorage.setItem('srt_merge_subtitles', elements.mergeSubtitles.checked);
+}
+
+// ============================================
+// Settings File (export / import)
+// ============================================
+
+function exportSettings() {
+    saveSettings();
+    const stored = (name) => (localStorage.getItem(name) || '').trim();
+    const providers = {};
+    for (const provider of PROVIDERS) {
+        providers[provider] = { apiKey: stored(`srt_${provider}_api_key`), model: stored(`srt_${provider}_model`) };
+    }
+    providers.openai.baseUrl = stored('srt_openai_base_url');
+
+    const settings = {
+        format: SETTINGS_FILE_FORMAT,
+        version: SETTINGS_FILE_VERSION,
+        provider: elements.apiProvider.value,
+        providers,
+        targetLanguage: elements.targetLanguage.value,
+        // An emptied field exports as null, which import skips instead of clamping to the minimum.
+        chunkSize: elements.chunkSize.value === '' ? null : Number(elements.chunkSize.value),
+        parallelRequests: elements.parallelRequests.value === '' ? null : Number(elements.parallelRequests.value),
+        customInstructions: elements.customInstructions.value,
+        mergeSubtitles: elements.mergeSubtitles.checked,
+        optimizeTimings: elements.optimizeTimings.checked
+    };
+
+    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'srt-translator-settings.json';
+    link.click();
+    // Some browsers start the download asynchronously; revoke a little later.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showSettingsStatus('Settings exported. The file contains your API keys.');
+}
+
+// Returns a whole number within the input's min/max, or null if the value is not a number.
+function clampToInput(value, input) {
+    const number = Math.round(Number(value));
+    if (value === null || value === '' || !Number.isFinite(number)) return null;
+    return Math.min(Number(input.max), Math.max(Number(input.min), number));
+}
+
+// Writes an imported settings object to localStorage. Keys, models and the
+// base URL are replaced as a set: a provider the file has no key for loses its
+// saved key, so an old key never travels to a base URL that came from the file.
+// Language, chunk size and parallel requests change only when the file has a
+// valid value; otherwise the current one stays.
+function applySettingsFile(data) {
+    if (!data || typeof data !== 'object' || data.format !== SETTINGS_FILE_FORMAT) {
+        throw new Error('This is not a settings file exported from this app.');
+    }
+    if (data.version !== SETTINGS_FILE_VERSION) {
+        throw new Error('This settings file was made by a different version of the app.');
+    }
+    if (!PROVIDERS.includes(data.provider)) {
+        throw new Error('The settings file names an unknown provider.');
+    }
+    const text = (value) => (typeof value === 'string' ? value.trim() : '');
+    const providers = data.providers && typeof data.providers === 'object' ? data.providers : {};
+
+    localStorage.setItem('srt_api_provider', data.provider);
+    for (const provider of PROVIDERS) {
+        const entry = providers[provider] && typeof providers[provider] === 'object' ? providers[provider] : {};
+        localStorage.setItem(`srt_${provider}_api_key`, text(entry.apiKey));
+        localStorage.setItem(`srt_${provider}_model`, text(entry.model));
+    }
+    localStorage.setItem('srt_openai_base_url', text(providers.openai && providers.openai.baseUrl));
+
+    const language = text(data.targetLanguage);
+    if (Array.from(elements.targetLanguage.options).some(option => option.value === language)) {
+        localStorage.setItem('srt_target_language', language);
+    }
+    const chunkSize = clampToInput(data.chunkSize, elements.chunkSize);
+    if (chunkSize !== null) localStorage.setItem('srt_chunk_size', String(chunkSize));
+    const parallel = clampToInput(data.parallelRequests, elements.parallelRequests);
+    if (parallel !== null) localStorage.setItem('srt_parallel_requests', String(parallel));
+    localStorage.setItem('srt_custom_instructions', typeof data.customInstructions === 'string' ? data.customInstructions : '');
+    localStorage.setItem('srt_merge_subtitles', String(data.mergeSubtitles === true));
+    localStorage.setItem('srt_optimize_timings', String(data.optimizeTimings === true));
+}
+
+async function importSettings(file) {
+    if (!file) return;
+    try {
+        if (isTranslating) throw new Error('Wait for the translation to finish first.');
+        if (file.size > SETTINGS_FILE_MAX_BYTES) throw new Error('This file is too large to be a settings file.');
+        let data;
+        try {
+            data = JSON.parse(await file.text());
+        } catch (e) {
+            throw new Error('This file is not valid JSON.');
+        }
+        applySettingsFile(data);
+
+        loadSavedSettings();
+        dropdowns.forEach(dropdown => dropdown.sync());
+        updateProviderUI();
+        reprocessLoadedFile();
+        updateTranslateButton();
+        updateTranslateButtonText();
+        // A shared file could point the custom provider at someone else's
+        // server, so say where requests will now go.
+        const endpoint = elements.apiProvider.value === 'openai' ? chatCompletionsUrl(elements.apiBaseUrl.value) : null;
+        showSettingsStatus(endpoint ? `Settings imported. Requests will go to ${new URL(endpoint).host}.` : 'Settings imported.');
+    } catch (error) {
+        showSettingsStatus(`Could not import settings: ${error.message}`, true);
+    } finally {
+        // Allow importing the same file again after fixing it.
+        elements.settingsFileInput.value = '';
+    }
+}
+
+function showSettingsStatus(message, isError = false) {
+    clearTimeout(settingsStatusTimer);
+    const status = elements.settingsFileStatus;
+    status.textContent = message;
+    status.classList.toggle('error', isError);
+    // Success notes clear after a while; errors stay until the next action.
+    // The element is never display:none, so screen readers announce updates.
+    if (!isError) settingsStatusTimer = setTimeout(() => { status.textContent = ''; }, 6000);
 }
 
 // ============================================
@@ -213,6 +346,9 @@ function setupEventListeners() {
     // Actions
     elements.translateBtn.addEventListener('click', startTranslation);
     elements.downloadBtn.addEventListener('click', downloadResult);
+    elements.exportSettingsBtn.addEventListener('click', exportSettings);
+    elements.importSettingsBtn.addEventListener('click', () => elements.settingsFileInput.click());
+    elements.settingsFileInput.addEventListener('change', (e) => importSettings(e.target.files[0]));
 
     // Initial UI state
     updateTranslateButton();

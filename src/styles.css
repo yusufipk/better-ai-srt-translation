@@ -386,6 +386,56 @@ textarea.control {
     opacity: 0.9;
 }
 
+.btn-ghost {
+    padding: 0.55rem 0.75rem;
+    font-size: 0.85rem;
+    font-weight: 550;
+    background: var(--surface-sunk);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.btn-ghost:hover {
+    border-color: var(--muted);
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+/* Settings file */
+
+.settings-file {
+    position: relative;
+}
+
+.file-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+}
+
+.settings-file-status {
+    font-size: 0.85rem;
+    color: var(--ok);
+}
+
+.settings-file-status.error {
+    color: var(--error);
+}
+
+/* Collapsed while empty but kept in the accessibility tree, so the live
+   region exists before its first message. */
+.settings-file-status:empty {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+}
+
 /* Progress */
 
 .progress {

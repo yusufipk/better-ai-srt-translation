@@ -107,6 +107,27 @@
                     <span>Extend short subtitles</span>
                 </label>
             </section>
+
+            <section class="group settings-file" aria-label="Settings file">
+                <div class="file-actions">
+                    <button type="button" class="btn btn-ghost" id="exportSettingsBtn" title="Saves your API keys, models and options to a JSON file you can import in another browser or on another machine. The keys are in plain text, so keep the file private and never commit it.">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 4v11m0 0-4-4m4 4 4-4" />
+                            <path d="M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />
+                        </svg>
+                        Export settings
+                    </button>
+                    <button type="button" class="btn btn-ghost" id="importSettingsBtn" title="Loads a settings file exported from this app and replaces the keys, models and options saved in this browser. Only import files you exported yourself.">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 15V4m0 0L8 8m4-4 4 4" />
+                            <path d="M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />
+                        </svg>
+                        Import settings
+                    </button>
+                </div>
+                <p class="settings-file-status" id="settingsFileStatus" role="status"></p>
+                <input type="file" id="settingsFileInput" accept=".json,application/json" class="hidden">
+            </section>
         </aside>
 
         <div class="workspace">

@@ -31,7 +31,7 @@ Two optional switches change the file before translation: Merge split sentences 
 
 ## Privacy
 
-Your API key is stored in your browser's `localStorage`. Only subtitle text is sent, and only to the provider you picked. Use an `https` base URL for any server that is not on your own machine, or the key travels unencrypted.
+Your API key is stored in your browser's `localStorage` (Export settings writes it to a JSON file in plain text, so keep that file private). Only subtitle text is sent, and only to the provider you picked. Use an `https` base URL for any server that is not on your own machine, or the key travels unencrypted.
 
 ## License
 
