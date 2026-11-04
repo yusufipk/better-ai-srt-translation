@@ -1,13 +1,13 @@
 # SRT Translator
 
-Translate `.srt` subtitle files with Gemini (Google AI Studio) or any model on OpenRouter. It runs entirely in your browser, and every translated line stays on its original timestamp.
+Translate `.srt` subtitle files with Gemini (Google AI Studio), any model on OpenRouter, or your own OpenAI-compatible server. It runs entirely in your browser, and every translated line stays on its original timestamp.
 
 ![SRT Translator](assets/ui.webp)
 
 ## Usage
 
 1. Open `index.html` in a browser. There is nothing to install or build.
-2. Pick a provider and paste its API key ([Google AI Studio](https://aistudio.google.com/app/apikey) or [OpenRouter](https://openrouter.ai/keys)).
+2. Pick a provider and paste its API key ([Google AI Studio](https://aistudio.google.com/app/apikey) or [OpenRouter](https://openrouter.ai/keys)). For OpenAI-compatible, enter the base URL (e.g. `http://localhost:11434/v1` for Ollama) and a model name; the server must allow browser requests (CORS).
 3. Drop an `.srt` file, choose the target language and click Translate.
 4. Download the result. Failed chunks keep their original text, so the file is always complete.
 
@@ -29,7 +29,7 @@ Two optional switches change the file before translation: Merge split sentences 
 
 ## Privacy
 
-Your API key is stored in your browser's `localStorage`. Only subtitle text is sent, and only to the provider you picked.
+Your API key is stored in your browser's `localStorage`. Only subtitle text is sent, and only to the provider you picked. Use an `https` base URL for any server that is not on your own machine, or the key travels unencrypted.
 
 ## License
 

@@ -166,6 +166,10 @@ h2 {
     opacity: 0.8;
 }
 
+.control[aria-invalid="true"] {
+    border-color: var(--error);
+}
+
 .control:focus {
     outline: none;
     border-color: var(--text);

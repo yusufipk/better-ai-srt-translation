@@ -4,17 +4,23 @@
 
 const DEFAULT_MODEL_GEMINI = 'gemini-3.1-flash-lite';
 const DEFAULT_MODEL_OPENROUTER = 'google/gemini-3.1-flash-lite';
+const PROVIDERS = ['gemini', 'openrouter', 'openai'];
+// Providers that speak the OpenAI chat completions format.
+const OPENAI_STYLE_PROVIDERS = ['openrouter', 'openai'];
 const DEFAULT_PARALLEL = 5; // Safe default for Gemini API Free Tier
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;  // 1 second
 const REQUEST_TIMEOUT_MS = 30000;  // 30 seconds
+// Self-hosted servers often run one request at a time, so queued chunks wait longer.
+const CUSTOM_SERVER_TIMEOUT_MS = 120000;  // 2 minutes
 
 // Custom API Error class to propagate status and detailed payload
 class APIError extends Error {
-    constructor(status, message, details) {
+    constructor(status, message, details, retryAfterSeconds = null) {
         super(message);
         this.status = status;
         this.details = details;
+        this.retryAfterSeconds = retryAfterSeconds;
     }
 }
 
@@ -23,6 +29,7 @@ let srtContent = '';
 let srtBlocks = [];
 let translatedResult = '';
 let originalFileName = '';
+let isTranslating = false;
 
 // DOM Elements
 const elements = {
@@ -50,7 +57,9 @@ const elements = {
     failedChunks: document.getElementById('failedChunks'),
     optimizeTimings: document.getElementById('optimizeTimings'),
     mergeSubtitles: document.getElementById('mergeSubtitles'),
-    apiProvider: document.getElementById('apiProvider')
+    apiProvider: document.getElementById('apiProvider'),
+    apiBaseUrl: document.getElementById('apiBaseUrl'),
+    baseUrlField: document.getElementById('baseUrlField')
 };
 
 // ============================================
@@ -67,7 +76,11 @@ function init() {
 
 function updateProviderUI() {
     const provider = elements.apiProvider.value;
-    if (provider === 'openrouter') {
+    elements.baseUrlField.classList.toggle('hidden', provider !== 'openai');
+    if (provider === 'openai') {
+        elements.apiKey.placeholder = 'Optional for servers without auth';
+        elements.customModel.placeholder = 'Required, e.g. gpt-4.1-mini or llama3.1';
+    } else if (provider === 'openrouter') {
         elements.apiKey.placeholder = 'Paste your OpenRouter API key';
         elements.customModel.placeholder = `Default: ${DEFAULT_MODEL_OPENROUTER}`;
     } else {
@@ -78,8 +91,6 @@ function updateProviderUI() {
 
 function loadSavedSettings() {
     const savedProvider = localStorage.getItem('srt_api_provider');
-    const savedApiKey = localStorage.getItem('srt_gemini_api_key') || localStorage.getItem('srt_openrouter_api_key');
-    const savedModel = localStorage.getItem('srt_custom_model');
     const savedLanguage = localStorage.getItem('srt_target_language');
     const savedChunkSize = localStorage.getItem('srt_chunk_size');
     const savedParallel = localStorage.getItem('srt_parallel_requests');
@@ -87,19 +98,20 @@ function loadSavedSettings() {
     const savedOptimize = localStorage.getItem('srt_optimize_timings');
     const savedMerge = localStorage.getItem('srt_merge_subtitles');
 
-    if (savedProvider) elements.apiProvider.value = savedProvider;
-    else elements.apiProvider.value = 'gemini';
+    elements.apiProvider.value = PROVIDERS.includes(savedProvider) ? savedProvider : 'gemini';
 
-    // Load saved API key (check provider-specific keys first)
-    const provider = elements.apiProvider.value;
-    const providerKey = localStorage.getItem(`srt_${provider}_api_key`);
-    if (providerKey) {
-        elements.apiKey.value = providerKey.trim();
-    } else if (savedApiKey) {
-        elements.apiKey.value = savedApiKey.trim();
+    // Older versions kept one shared model field. Hand it to the provider that
+    // was active then, the only one whose ID format it is known to match.
+    const legacyModel = localStorage.getItem('srt_custom_model');
+    if (legacyModel !== null) {
+        const modelKey = `srt_${elements.apiProvider.value}_model`;
+        if (localStorage.getItem(modelKey) === null) localStorage.setItem(modelKey, legacyModel);
+        localStorage.removeItem('srt_custom_model');
     }
 
-    if (savedModel) elements.customModel.value = savedModel.trim();
+    loadProviderSettings();
+    elements.apiBaseUrl.value = (localStorage.getItem('srt_openai_base_url') || '').trim();
+
     if (savedLanguage) elements.targetLanguage.value = savedLanguage.trim();
     if (savedChunkSize) elements.chunkSize.value = savedChunkSize.trim();
     if (savedParallel) elements.parallelRequests.value = savedParallel.trim();
@@ -113,11 +125,28 @@ function loadSavedSettings() {
     else elements.mergeSubtitles.checked = false; // Default to false (disabled)
 }
 
+// Key and model are stored per provider, so switching never carries one
+// provider's key over to another provider's endpoint.
+function loadProviderSettings() {
+    const provider = elements.apiProvider.value;
+    const keyName = `srt_${provider}_api_key`;
+    let key = (localStorage.getItem(keyName) || '').trim();
+    // Older versions could save one provider's key under another's name when
+    // switching. Drop keys whose known prefix belongs to the other service.
+    if ((provider === 'gemini' && key.startsWith('sk-or-')) || (provider === 'openrouter' && key.startsWith('AIza'))) {
+        localStorage.removeItem(keyName);
+        key = '';
+    }
+    elements.apiKey.value = key;
+    elements.customModel.value = (localStorage.getItem(`srt_${provider}_model`) || '').trim();
+}
+
 function saveSettings() {
     const provider = elements.apiProvider.value;
     localStorage.setItem('srt_api_provider', provider);
     localStorage.setItem(`srt_${provider}_api_key`, elements.apiKey.value.trim());
-    localStorage.setItem('srt_custom_model', elements.customModel.value.trim());
+    localStorage.setItem(`srt_${provider}_model`, elements.customModel.value.trim());
+    localStorage.setItem('srt_openai_base_url', elements.apiBaseUrl.value.trim());
     localStorage.setItem('srt_target_language', elements.targetLanguage.value);
     localStorage.setItem('srt_chunk_size', elements.chunkSize.value);
     localStorage.setItem('srt_parallel_requests', elements.parallelRequests.value);
@@ -150,11 +179,21 @@ function setupEventListeners() {
         updateTranslateButton();
     });
     elements.apiProvider.addEventListener('change', () => {
+        // Key and model fields already saved themselves under the previous
+        // provider on input; load the new provider's values before saving.
+        loadProviderSettings();
         saveSettings();
         updateProviderUI();
         updateTranslateButton();
     });
-    elements.customModel.addEventListener('change', saveSettings);
+    elements.customModel.addEventListener('input', () => {
+        saveSettings();
+        updateTranslateButton();
+    });
+    elements.apiBaseUrl.addEventListener('input', () => {
+        saveSettings();
+        updateTranslateButton();
+    });
     elements.targetLanguage.addEventListener('change', () => {
         saveSettings();
         updateTranslateButtonText();
@@ -338,8 +377,41 @@ function blocksToSRT(blocks) {
 // UI Updates
 // ============================================
 
+// Returns the chat completions URL for a user-supplied base URL, or null if
+// it is not a valid http(s) URL. Accepts both ".../v1" and the full endpoint.
+function chatCompletionsUrl(baseUrl) {
+    let input = baseUrl.trim();
+    // Allow "localhost:11434/v1" without a scheme, but only for this machine,
+    // so a remote server is never silently reached over plain http.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input) && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(input)) {
+        input = `http://${input}`;
+    }
+    let url;
+    try {
+        url = new URL(input);
+    } catch (e) {
+        return null;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    // fetch() refuses URLs with embedded credentials; use the API key field instead.
+    if (url.username || url.password) return null;
+    const path = url.pathname.replace(/\/+$/, '');
+    url.pathname = path.endsWith('/chat/completions') ? path : `${path}/chat/completions`;
+    return url.toString();
+}
+
+function isReadyToTranslate() {
+    if (!srtContent || isTranslating) return false;
+    if (elements.apiProvider.value === 'openai') {
+        return Boolean(chatCompletionsUrl(elements.apiBaseUrl.value) && elements.customModel.value.trim());
+    }
+    return Boolean(elements.apiKey.value.trim());
+}
+
 function updateTranslateButton() {
-    elements.translateBtn.disabled = !srtContent || !elements.apiKey.value.trim();
+    elements.translateBtn.disabled = !isReadyToTranslate();
+    const url = elements.apiBaseUrl.value.trim();
+    elements.apiBaseUrl.setAttribute('aria-invalid', String(Boolean(url) && !chatCompletionsUrl(url)));
 }
 
 function updateTranslateButtonText() {
@@ -472,7 +544,7 @@ function parseMarkedTranslation(blocks, translatedText) {
     return result;
 }
 
-async function translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider) {
+async function translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint) {
     // Extract text with block markers
     const markedText = extractTextWithMarkers(chunk);
     const systemPrompt = buildSystemPrompt(targetLanguage, customInstructions);
@@ -480,23 +552,26 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
     console.log(`[Chunk ${index + 1}] Sending API request...`);
 
     // Create abort controller for timeout
+    const timeoutMs = provider === 'openai' ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
         console.log(`[Chunk ${index + 1}] TIMEOUT - aborting request`);
         controller.abort();
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
 
     try {
         let response;
-        if (provider === 'openrouter') {
-            response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        if (OPENAI_STYLE_PROVIDERS.includes(provider)) {
+            const headers = { 'Content-Type': 'application/json' };
+            // Self-hosted servers often run without auth; send a key only if one is set.
+            if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+            if (provider === 'openrouter') {
+                headers['HTTP-Referer'] = window.location.origin && window.location.origin !== 'null' ? window.location.origin : 'https://github.com/AmiraliNotFound/better-ai-srt-translation';
+                headers['X-Title'] = 'Better AI SRT Translation';
+            }
+            response = await fetch(provider === 'openrouter' ? 'https://openrouter.ai/api/v1/chat/completions' : endpoint, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey.trim()}`,
-                    'HTTP-Referer': window.location.origin && window.location.origin !== 'null' ? window.location.origin : 'https://github.com/AmiraliNotFound/better-ai-srt-translation',
-                    'X-Title': 'Better AI SRT Translation'
-                },
+                headers,
                 body: JSON.stringify({
                     model: model,
                     messages: [
@@ -551,16 +626,18 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
             } catch (e) {
                 // not JSON
             }
-            throw new APIError(response.status, message, details);
+            // OpenAI-style servers announce rate-limit cooldowns in Retry-After (seconds).
+            const retryAfter = parseFloat(response.headers.get('Retry-After'));
+            throw new APIError(response.status, message, details, Number.isFinite(retryAfter) ? retryAfter : null);
         }
 
         const data = await response.json();
         console.log(`[Chunk ${index + 1}] Parsed response, parsing markers...`);
 
         let translatedText;
-        if (provider === 'openrouter') {
+        if (OPENAI_STYLE_PROVIDERS.includes(provider)) {
             if (!data.choices || data.choices.length === 0 || !data.choices[0].message || !data.choices[0].message.content) {
-                throw new Error('Invalid or empty response structure from OpenRouter');
+                throw new Error(`Invalid or empty response structure from ${provider === 'openai' ? 'the server' : 'OpenRouter'}`);
             }
             translatedText = data.choices[0].message.content;
         } else {
@@ -614,20 +691,20 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
         clearTimeout(timeoutId);
         console.log(`[Chunk ${index + 1}] Error:`, error.name, error.message);
         if (error.name === 'AbortError') {
-            throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+            throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
         }
         throw error;
     }
 }
 
 // Retry wrapper with exponential backoff, and smart rate-limit (429) delay handling
-async function translateChunkWithRetry(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, onRetry) {
+async function translateChunkWithRetry(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, onRetry) {
     let lastError;
     let maxAttempts = MAX_RETRIES;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            return await translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider);
+            return await translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint);
         } catch (error) {
             lastError = error;
 
@@ -639,7 +716,7 @@ async function translateChunkWithRetry(chunk, index, apiKey, model, targetLangua
                     // Increase max attempts for rate limit retries to give it more chances
                     maxAttempts = Math.max(maxAttempts, 8);
                     
-                    let retrySeconds = 60; // Default fallback wait is 60 seconds
+                    let retrySeconds = error.retryAfterSeconds ?? 60; // Default fallback wait is 60 seconds
                     
                     // Try to parse retryDelay from Google API error details
                     if (error.details && Array.isArray(error.details)) {
@@ -671,13 +748,24 @@ async function translateChunkWithRetry(chunk, index, apiKey, model, targetLangua
 // ============================================
 
 async function startTranslation() {
+    if (!isReadyToTranslate()) return;
+    isTranslating = true;
+    try {
+        await runTranslation();
+    } finally {
+        isTranslating = false;
+        updateTranslateButton();
+    }
+}
+
+async function runTranslation() {
     const apiKey = elements.apiKey.value.trim();
-    if (!apiKey || !srtContent) return;
 
     // Get settings
     const provider = elements.apiProvider.value;
     const defaultModel = provider === 'openrouter' ? DEFAULT_MODEL_OPENROUTER : DEFAULT_MODEL_GEMINI;
     const model = elements.customModel.value.trim() || defaultModel;
+    const endpoint = provider === 'openai' ? chatCompletionsUrl(elements.apiBaseUrl.value) : null;
     const targetLanguage = elements.targetLanguage.value;
     const targetChunkSize = parseInt(elements.chunkSize.value) || 50;
     const maxParallel = parseInt(elements.parallelRequests.value) || DEFAULT_PARALLEL;
@@ -707,6 +795,7 @@ async function startTranslation() {
 
     log(`Starting translation to ${targetLanguage}...`, 'info');
     log(`Model: ${model}`, 'info');
+    if (provider === 'openai') log(`Endpoint: ${endpoint}`, 'info');
     log(`Chunks: ${chunks.length} | Size: ~${targetChunkSize} | Parallel: ${maxParallel}`, 'info');
 
     let completed = 0;
@@ -730,6 +819,7 @@ async function startTranslation() {
                 targetLanguage,
                 customInstructions,
                 provider,
+                endpoint,
                 (idx, attempt, delay, errorMsg) => {
                     setChunkStatus(idx, 'error');
                     const waitSec = Math.round(delay / 1000);
@@ -783,7 +873,6 @@ async function startTranslation() {
     const status = completed === chunks.length ? 'success' : 'error';
     log(`Translation complete! ${completed} successful, ${failed} failed`, status);
 
-    elements.translateBtn.disabled = false;
     elements.downloadBtn.classList.remove('hidden');
 }
 

@@ -13,7 +13,7 @@
     <header class="topbar">
         <div>
             <h1>SRT Translator</h1>
-            <p class="tagline">Translate subtitle files with Gemini or OpenRouter. Every line keeps its timestamp.</p>
+            <p class="tagline">Translate subtitle files with Gemini, OpenRouter or your own OpenAI-compatible server. Every line keeps its timestamp.</p>
         </div>
         <a class="repo-link" href="https://github.com/yusufipk/better-ai-srt-translation" target="_blank" rel="noopener" title="Source on GitHub" aria-label="Source on GitHub">
             <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor">
@@ -31,8 +31,13 @@
                     <select id="apiProvider" class="control">
                         <option value="gemini">Google AI Studio</option>
                         <option value="openrouter">OpenRouter</option>
+                        <option value="openai">OpenAI-compatible</option>
                     </select>
                 </div>
+                <label class="field hidden" id="baseUrlField">
+                    <span class="field-label" title="Any server with an OpenAI-style /chat/completions endpoint, such as OpenAI, Ollama, LM Studio, vLLM or LiteLLM. It must allow requests from the browser (CORS). Use https for anything not on this machine.">Base URL</span>
+                    <input type="url" id="apiBaseUrl" class="control" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
+                </label>
                 <label class="field">
                     <span class="field-label" title="Stored only in this browser's localStorage. Sent only to the provider you picked.">API key</span>
                     <input type="password" id="apiKey" class="control" autocomplete="off" spellcheck="false" placeholder="Paste your Gemini API key">
