@@ -4,54 +4,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <title>SRT Translator</title>
     <link rel="stylesheet" href="src/styles.css">
 </head>
 
 <body>
-    <div class="container">
-        <header>
+    <header class="topbar">
+        <div>
             <h1>SRT Translator</h1>
-            <p class="subtitle">AI-Powered Subtitle Translation via Google AI Studio & OpenRouter</p>
-        </header>
-
-        <div class="card">
-            <div class="card-title">API Configuration</div>
-            <div class="settings-grid" style="grid-template-columns: 1fr; margin-bottom: 0.8rem;">
-                <label style="margin: 0;">
-                    <span style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; display: block;">API Provider</span>
-                    <select id="apiProvider" class="select-field" style="width: 100%;">
-                        <option value="gemini">Google AI Studio (Gemini API)</option>
-                        <option value="openrouter">OpenRouter</option>
-                    </select>
-                </label>
-            </div>
-            <input type="password" id="apiKey" class="input-field" placeholder="Enter your Gemini API key...">
-            <div class="model-row" style="margin-top: 0.8rem;">
-                <input type="text" id="customModel" class="input-field"
-                    placeholder="Custom model (leave empty for default: gemini-3.1-flash-lite)">
-            </div>
-            <div style="display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; align-items: center;">
-                <button type="button" class="btn btn-primary" id="exportSettingsBtn" style="width: auto; padding: 0.65rem 1rem;">
-                    Export settings
-                </button>
-                <button type="button" class="btn btn-primary" id="importSettingsBtn" style="width: auto; padding: 0.65rem 1rem;">
-                    Import settings
-                </button>
-                <input type="file" id="settingsFileInput" accept="application/json,.json" class="hidden">
-                <span id="settingsFileStatus" style="font-size: 0.8rem; color: var(--text-secondary);" aria-live="polite">
-                    Settings are stored in this browser. Export a file to move them to another machine.
-                </span>
-            </div>
+            <p class="tagline">Translate subtitle files with Gemini, OpenRouter or your own OpenAI-compatible server. Every line keeps its timestamp.</p>
         </div>
+        <a class="repo-link" href="https://github.com/yusufipk/better-ai-srt-translation" target="_blank" rel="noopener" title="Source on GitHub" aria-label="Source on GitHub">
+            <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+            </svg>
+        </a>
+    </header>
 
-        <div class="card">
-            <div class="card-title">Translation Settings</div>
-            <div class="settings-grid">
-                <label>
-                    <span>Target Language</span>
-                    <select id="targetLanguage" class="select-field">
+    <main class="layout">
+        <aside class="settings" aria-label="Settings">
+            <section class="group">
+                <h2>Provider</h2>
+                <div class="field">
+                    <span class="field-label">Service</span>
+                    <select id="apiProvider" class="control">
+                        <option value="gemini">Google AI Studio</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="openai">OpenAI-compatible</option>
+                    </select>
+                </div>
+                <label class="field hidden" id="baseUrlField">
+                    <span class="field-label" title="Any server with an OpenAI-style /chat/completions endpoint, such as OpenAI, Ollama, LM Studio, vLLM or LiteLLM. It must allow requests from the browser (CORS). Use https for anything not on this machine.">Base URL</span>
+                    <input type="url" id="apiBaseUrl" class="control" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
+                </label>
+                <label class="field">
+                    <span class="field-label" title="Stored only in this browser's localStorage. Sent only to the provider you picked.">API key</span>
+                    <input type="password" id="apiKey" class="control" autocomplete="off" spellcheck="false" placeholder="Paste your Gemini API key">
+                </label>
+                <label class="field">
+                    <span class="field-label">Model</span>
+                    <input type="text" id="customModel" class="control" spellcheck="false">
+                </label>
+            </section>
+
+            <section class="group">
+                <h2>Translation</h2>
+                <div class="field">
+                    <span class="field-label">Target language</span>
+                    <select id="targetLanguage" class="control">
                         <option value="Turkish">Turkish</option>
+                        <option value="English">English</option>
                         <option value="Spanish">Spanish</option>
                         <option value="French">French</option>
                         <option value="German">German</option>
@@ -73,101 +76,90 @@
                         <option value="Indonesian">Indonesian</option>
                         <option value="Greek">Greek</option>
                     </select>
+                </div>
+                <div class="pair">
+                    <label class="field">
+                        <span class="field-label" title="Subtitle blocks per request. Smaller chunks keep lines better aligned with their timestamps.">Chunk size</span>
+                        <input type="number" id="chunkSize" class="control" value="20" min="10" max="200">
+                    </label>
+                    <label class="field">
+                        <span class="field-label" title="Keep this at 5 on the Gemini free tier to stay under its requests-per-minute limit. Paid keys can go up to 100.">Parallel requests</span>
+                        <input type="number" id="parallelRequests" class="control" value="5" min="1" max="100">
+                    </label>
+                </div>
+                <label class="field">
+                    <span class="field-label">Instructions</span>
+                    <textarea id="customInstructions" class="control" rows="3"
+                        placeholder="Optional, e.g. keep technical terms in English"></textarea>
                 </label>
-                <label>
-                    <span>Chunk Size (SRT blocks)</span>
-                    <input type="number" id="chunkSize" class="input-field" value="20" min="10" max="200">
-                </label>
-                <label>
-                    <span>Parallel Requests</span>
-                    <input type="number" id="parallelRequests" class="input-field" value="5" min="1" max="100">
-                </label>
-            </div>
-            <div class="checkbox-row" style="margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem;">
-                <label style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); font-size: 0.9rem; cursor: pointer; user-select: none;">
-                    <input type="checkbox" id="optimizeTimings" style="cursor: pointer; width: 1.2rem; height: 1.2rem; border-radius: 4px; accent-color: var(--accent-primary);">
-                    <span>Extend short subtitles (increase display time for fast subtitles)</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); font-size: 0.9rem; cursor: pointer; user-select: none;">
-                    <input type="checkbox" id="mergeSubtitles" style="cursor: pointer; width: 1.2rem; height: 1.2rem; border-radius: 4px; accent-color: var(--accent-primary);">
-                    <span>Merge short split sentences (prevent single words from flashing on screen)</span>
-                </label>
-            </div>
-            <div class="instruction-section">
-                <label>
-                    <span>Custom Instructions (optional)</span>
-                    <textarea id="customInstructions" class="textarea-field"
-                        placeholder="Add any specific translation instructions here... (e.g., 'Keep technical terms in English', 'Use informal tone')"
-                        rows="3"></textarea>
-                </label>
-            </div>
-        </div>
+            </section>
 
-        <div class="card">
-            <div class="card-title">Upload SRT File</div>
-            <div class="drop-zone" id="dropZone">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-                <p id="dropText">Drop your .srt file here or click to browse</p>
-                <p class="filename hidden" id="fileName"></p>
+            <section class="group">
+                <h2>Timing</h2>
+                <label class="toggle" title="Folds a short trailing block (a few words, or under 1.2 s) into the previous one when it continues the same sentence. Tuned for Latin-script subtitles.">
+                    <input type="checkbox" id="mergeSubtitles">
+                    <span class="toggle-track" aria-hidden="true"></span>
+                    <span>Merge split sentences</span>
+                </label>
+                <label class="toggle" title="Lengthens blocks shown for less than about 1.3 seconds, leaving a 50 ms gap before the next one. This changes the original timestamps.">
+                    <input type="checkbox" id="optimizeTimings">
+                    <span class="toggle-track" aria-hidden="true"></span>
+                    <span>Extend short subtitles</span>
+                </label>
+            </section>
+        </aside>
+
+        <div class="workspace">
+            <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Choose an SRT file">
+                <div class="drop-empty" id="dropEmpty">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 15V4m0 0L8 8m4-4 4 4" />
+                        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+                    </svg>
+                    <p class="drop-title">Drop an .srt file here or click to choose one</p>
+                </div>
+                <div class="file-head">
+                    <p class="filename hidden" id="fileName"></p>
+                    <p class="drop-count" id="dropText"></p>
+                </div>
+                <ol class="preview hidden" id="filePreview" aria-label="First subtitle blocks"></ol>
             </div>
             <input type="file" id="fileInput" accept=".srt" class="hidden">
-        </div>
 
-        <button class="btn btn-primary" id="translateBtn" disabled>
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
-            </svg>
-            <span id="translateBtnText">Translate</span>
-        </button>
+            <button class="btn btn-primary" id="translateBtn" disabled>
+                <span id="translateBtnText">Translate</span>
+            </button>
 
-        <div class="card hidden" id="progressCard">
-            <div class="card-title">Translation Progress</div>
-
-            <div class="stats">
-                <div class="stat">
-                    <div class="stat-value" id="totalChunks">0</div>
-                    <div class="stat-label">Total Chunks</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value" id="completedChunks">0</div>
-                    <div class="stat-label">Completed</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value" id="failedChunks">0</div>
-                    <div class="stat-label">Failed</div>
-                </div>
-            </div>
-
-            <div class="progress-section">
-                <div class="progress-header">
-                    <span class="progress-label">Overall Progress</span>
-                    <span class="progress-percentage" id="progressPercent">0%</span>
+            <section class="progress hidden" id="progressCard">
+                <div class="progress-head">
+                    <h2>Progress</h2>
+                    <p class="progress-counts" aria-live="polite">
+                        <span><strong id="completedChunks">0</strong> of <strong id="totalChunks">0</strong> chunks</span>
+                        <span class="failed-count"><strong id="failedChunks">0</strong> failed</span>
+                        <strong id="progressPercent">0%</strong>
+                    </p>
                 </div>
                 <div class="progress-bar">
                     <div class="progress-fill" id="progressFill"></div>
                 </div>
-            </div>
+                <div class="chunks" id="chunksGrid"></div>
+                <details class="log">
+                    <summary>Log</summary>
+                    <div class="log-container" id="logContainer"></div>
+                </details>
+            </section>
 
-            <div class="chunks-grid" id="chunksGrid"></div>
-
-            <div class="log-container" id="logContainer"></div>
+            <button class="btn btn-download hidden" id="downloadBtn">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 4v11m0 0-4-4m4 4 4-4" />
+                    <path d="M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />
+                </svg>
+                Download translated SRT
+            </button>
         </div>
+    </main>
 
-        <button class="btn btn-success hidden" id="downloadBtn">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-            Download Translated SRT
-        </button>
-    </div>
-
+    <script src="src/select.js"></script>
     <script src="src/app.js"></script>
 </body>
 
