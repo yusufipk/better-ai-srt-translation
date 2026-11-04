@@ -343,6 +343,8 @@ function setupEventListeners() {
         reprocessLoadedFile();
     });
 
+    setupHints();
+
     // Actions
     elements.translateBtn.addEventListener('click', startTranslation);
     elements.downloadBtn.addEventListener('click', downloadResult);
@@ -353,6 +355,33 @@ function setupEventListeners() {
     // Initial UI state
     updateTranslateButton();
     updateTranslateButtonText();
+}
+
+// Clock buttons next to the timing toggles. Hover and keyboard focus show the
+// tooltip through CSS; a click or tap pins it open (touch has no hover, and
+// Safari does not focus buttons on click). Escape hides it.
+function setupHints() {
+    document.querySelectorAll('.toggle-row').forEach(row => {
+        const button = row.querySelector('.hint-button');
+        button.addEventListener('click', () => {
+            row.classList.remove('hint-dismissed');
+            row.classList.toggle('hint-open');
+        });
+        button.addEventListener('blur', () => row.classList.remove('hint-open'));
+        button.addEventListener('mouseleave', () => row.classList.remove('hint-dismissed'));
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        document.querySelectorAll('.toggle-row').forEach(row => {
+            row.classList.remove('hint-open');
+            row.classList.add('hint-dismissed');
+        });
+    });
+    document.addEventListener('pointerdown', (e) => {
+        document.querySelectorAll('.toggle-row.hint-open').forEach(row => {
+            if (!row.querySelector('.hint-button').contains(e.target)) row.classList.remove('hint-open');
+        });
+    });
 }
 
 function handleDragOver(e) {

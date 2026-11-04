@@ -108,16 +108,34 @@
 
             <section class="group">
                 <h2>Timing</h2>
-                <label class="toggle" title="Folds a short trailing block (a few words, or under 1.2 s) into the previous one when it continues the same sentence. Tuned for Latin-script subtitles.">
-                    <input type="checkbox" id="mergeSubtitles">
-                    <span class="toggle-track" aria-hidden="true"></span>
-                    <span>Merge split sentences</span>
-                </label>
-                <label class="toggle" title="Lengthens blocks shown for less than about 1.3 seconds, leaving a 50 ms gap before the next one. This changes the original timestamps.">
-                    <input type="checkbox" id="optimizeTimings">
-                    <span class="toggle-track" aria-hidden="true"></span>
-                    <span>Extend short subtitles</span>
-                </label>
+                <div class="toggle-row">
+                    <label class="toggle">
+                        <input type="checkbox" id="mergeSubtitles" aria-describedby="mergeHint">
+                        <span class="toggle-track" aria-hidden="true"></span>
+                        <span>Merge split sentences</span>
+                    </label>
+                    <button type="button" class="hint-button" aria-label="About Merge split sentences" aria-describedby="mergeHint">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M12 7v5l3 2" />
+                        </svg>
+                    </button>
+                    <span class="hint-text" id="mergeHint" role="tooltip">Joins a short leftover piece of a sentence (a few words, or under 1.2 s) to the subtitle before it, so it does not flash by. Works best with Latin-script subtitles.</span>
+                </div>
+                <div class="toggle-row">
+                    <label class="toggle">
+                        <input type="checkbox" id="optimizeTimings" aria-describedby="extendHint">
+                        <span class="toggle-track" aria-hidden="true"></span>
+                        <span>Extend short subtitles</span>
+                    </label>
+                    <button type="button" class="hint-button" aria-label="About Extend short subtitles" aria-describedby="extendHint">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M12 7v5l3 2" />
+                        </svg>
+                    </button>
+                    <span class="hint-text" id="extendHint" role="tooltip">Keeps subtitles shown for under about 1.3 s on screen longer, stopping 50 ms before the next one. This changes the original timestamps.</span>
+                </div>
             </section>
 
             <section class="group settings-file" aria-label="Settings file">

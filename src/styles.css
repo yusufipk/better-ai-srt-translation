@@ -217,6 +217,66 @@ textarea.control {
     width: fit-content;
 }
 
+/* A toggle with a small clock button whose tooltip explains what it does.
+   The tooltip spans the row, so it always fits inside the settings column. */
+.toggle-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.hint-button {
+    display: inline-flex;
+    padding: 0.25rem;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    cursor: help;
+}
+
+.hint-button:hover,
+.toggle-row.hint-open .hint-button {
+    color: var(--text);
+}
+
+.hint-button:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+.hint-text {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 5;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 8px 22px var(--shadow);
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.12s ease, visibility 0.12s;
+}
+
+.hint-button:hover ~ .hint-text,
+.hint-button:focus-visible ~ .hint-text,
+.toggle-row.hint-open .hint-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+.toggle-row.hint-dismissed .hint-text {
+    visibility: hidden;
+    opacity: 0;
+}
+
 .toggle input {
     position: absolute;
     opacity: 0;
