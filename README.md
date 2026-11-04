@@ -1,6 +1,6 @@
 # SRT Translator
 
-Translate `.srt` subtitle files with Gemini (Google AI Studio), any model on OpenRouter, or your own OpenAI-compatible server. It runs entirely in your browser, and every translated line stays on its original timestamp.
+Translate `.srt` subtitle files with Gemini (Google AI Studio), any model on OpenRouter, or your own OpenAI-compatible server, right in your browser. Most subtitle translators either translate block by block, which breaks sentences that span several blocks, or translate whole sentences and leave some blocks empty. This one gives the model the full sentence and still puts every piece of the translation back on its original timestamp.
 
 ![SRT Translator](assets/ui.webp)
 
@@ -17,17 +17,24 @@ The default model is `gemini-3.1-flash-lite` (`google/gemini-3.1-flash-lite` on 
 
 ## How it keeps timing
 
-Subtitles split sentences across blocks, and languages order words differently, so translating block by block lets text drift into the wrong timestamp. The app tags each block with a marker before sending it:
+Subtitles split one sentence across several blocks, and languages order words differently (English puts the verb in the middle, Turkish at the end). Translate the sentence as a whole and the model tends to pour it all into the first block:
 
 ```
-[B1] Hello and welcome to
-[B2] a new episode. Today we have
-[B3] Chris Titus with us.
+[00:01] I will not   →  [00:01] Bunu yapmayacağım
+[00:02] do this.     →  [00:02]
 ```
 
-The model must return the same markers, so each piece of the translation lands back in its own block. Chunks of about 20 blocks are cut at sentence endings and translated in parallel.
+Translate each block on its own instead and the model never sees the sentence, so the fragments come out stiff and in the wrong word order. This app sends whole sentences but tags every block with a marker, and the model has to return the same markers:
 
-Two optional switches change the file before translation: Merge split sentences folds a short trailing fragment into the previous block, and Extend short subtitles lengthens blocks shown for under about 1.3 s. Both are off by default. Arabic and Persian output gets RTL punctuation and bidi markers so players like VLC render it correctly.
+```
+[B1] Hello and welcome to          →  [B1] Merhaba ve yeni bir
+[B2] a new episode. Today we have  →  [B2] bölüme hoş geldiniz. Bugün yanımızda
+[B3] Chris Titus with us.          →  [B3] Chris Titus var.
+```
+
+The translation stays natural and every block gets its share back on its own timestamp. A block whose marker does not come back keeps its original text instead of shifting the rest. Chunks of about 20 blocks end on a sentence ending when one is close, and run in parallel.
+
+Three optional switches, all off by default, shape the file: Merge split sentences folds a short trailing fragment into the previous block, Extend short subtitles lengthens blocks shown for under about 1.3 s, and Break long lines splits translated lines over 42 characters into balanced lines. Arabic and Persian output gets RTL punctuation and bidi markers so players like VLC render it correctly.
 
 ## Privacy
 

@@ -69,7 +69,7 @@ body {
     max-width: 1180px;
     margin: 0 auto 1.75rem;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 1rem;
 }
@@ -81,9 +81,10 @@ h1 {
     line-height: 1.2;
 }
 
-.tagline {
-    color: var(--muted);
-    margin-top: 0.25rem;
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
 }
 
 .topbar-actions {

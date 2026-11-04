@@ -6,16 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
     <title>SRT Translator</title>
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="assets/icon-180.png">
     <script src="src/theme.js"></script>
     <link rel="stylesheet" href="src/styles.css">
 </head>
 
 <body>
     <header class="topbar">
-        <div>
-            <h1>SRT Translator</h1>
-            <p class="tagline">Translate subtitle files with Gemini, OpenRouter or your own OpenAI-compatible server. Every line keeps its timestamp.</p>
-        </div>
+        <h1 class="brand"><img src="assets/icon.svg" alt="" width="32" height="32">SRT Translator</h1>
         <div class="topbar-actions">
             <button type="button" class="icon-button" id="themeToggle" aria-label="Switch theme" title="Switch theme">
                 <svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -116,7 +115,7 @@
             </section>
 
             <section class="group">
-                <h2>Timing</h2>
+                <h2>Subtitles</h2>
                 <div class="toggle-row">
                     <label class="toggle">
                         <input type="checkbox" id="mergeSubtitles" aria-describedby="mergeHint">
@@ -144,6 +143,22 @@
                         </svg>
                     </button>
                     <span class="hint-text" id="extendHint" role="tooltip">Keeps subtitles shown for under about 1.3 s on screen longer, stopping 50 ms before the next one. This changes the original timestamps.</span>
+                </div>
+                <div class="toggle-row">
+                    <label class="toggle">
+                        <input type="checkbox" id="wrapLines" aria-describedby="wrapHint">
+                        <span class="toggle-track" aria-hidden="true"></span>
+                        <span>Break long lines</span>
+                    </label>
+                    <button type="button" class="hint-button" aria-label="About Break long lines" aria-describedby="wrapHint">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M4 6h16" />
+                            <path d="M4 12h13a3 3 0 0 1 0 6h-4" />
+                            <path d="m15 16-2 2 2 2" />
+                            <path d="M4 18h5" />
+                        </svg>
+                    </button>
+                    <span class="hint-text" id="wrapHint" role="tooltip">Splits translated lines longer than 42 characters into shorter lines of about equal length, breaking after a comma or full stop where it can. Applies when you download, so you can switch it after translating.</span>
                 </div>
             </section>
 
