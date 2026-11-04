@@ -11,7 +11,21 @@ import { fileURLToPath } from 'node:url';
 const DEFAULT_MODEL_GEMINI = 'gemini-3.1-flash-lite';
 const DEFAULT_MODEL_OPENROUTER = 'google/gemini-3.1-flash-lite';
 const PROVIDERS = ['gemini', 'openrouter', 'openai'];
-const API_KEY_ENV = { gemini: 'GEMINI_API_KEY', openrouter: 'OPENROUTER_API_KEY', openai: 'OPENAI_API_KEY' };
+// The custom server gets its own variable: a real OPENAI_API_KEY exported for
+// other tools must never be sent to an arbitrary --base-url.
+const API_KEY_ENV = { gemini: 'GEMINI_API_KEY', openrouter: 'OPENROUTER_API_KEY', openai: 'SRT_OPENAI_API_KEY' };
+// Same limits as the web app's number inputs.
+const CHUNK_SIZE_RANGE = [10, 200];
+const PARALLEL_RANGE = [1, 100];
+// A bad key, an unknown model or a malformed request fails the same way for
+// every chunk, so retrying or carrying on only burns requests.
+const FATAL_STATUSES = new Set([400, 401, 403, 404]);
+
+// Server error text is printed to the terminal; drop control characters so a
+// response cannot inject escape sequences.
+function printable(text) {
+    return String(text).replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '');
+}
 const DEFAULT_CHUNK_SIZE = 20;
 const DEFAULT_PARALLEL = 5;
 const MAX_RETRIES = 3;
@@ -37,7 +51,7 @@ export function chatCompletionsUrl(baseUrl) {
         return null;
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-    // Keys go in --api-key or OPENAI_API_KEY, never in the URL where logs would show them.
+    // Keys go in --api-key or SRT_OPENAI_API_KEY, never in the URL where logs would show them.
     if (url.username || url.password) return null;
     const pathname = url.pathname.replace(/\/+$/, '');
     url.pathname = pathname.endsWith('/chat/completions') ? pathname : `${pathname}/chat/completions`;
@@ -323,10 +337,11 @@ async function translateChunkWithRetry(chunk, index, options) {
             return await translateChunk(chunk, index, options);
         } catch (error) {
             lastError = error;
+            if (FATAL_STATUSES.has(error.status)) break;
             if (attempt === attempts) break;
             if (error.status === 429) attempts = Math.max(attempts, 8);
             const delay = getRetryDelay(error, attempt);
-            console.warn(`  Chunk ${index + 1} failed (${error.message}); retrying in ${Math.ceil(delay / 1000)}s...`);
+            console.warn(`  Chunk ${index + 1} failed (${printable(error.message)}); retrying in ${Math.ceil(delay / 1000)}s...`);
             await sleep(delay);
         }
     }
@@ -339,24 +354,32 @@ async function translateBlocks(blocks, options) {
     const results = new Array(chunks.length);
     let nextChunk = 0;
     let failed = 0;
+    let fatalError = null;
 
     async function worker() {
-        while (true) {
+        while (!fatalError) {
             const index = nextChunk++;
             if (index >= chunks.length) return;
             try {
                 results[index] = await translateChunkWithRetry(chunks[index], index, options);
                 console.log(`  Chunk ${index + 1}/${chunks.length} translated`);
             } catch (error) {
+                if (FATAL_STATUSES.has(error.status)) {
+                    fatalError ||= error;
+                    return;
+                }
                 failed++;
                 results[index] = blocksToSRT(chunks[index]);
-                console.error(`  Chunk ${index + 1}/${chunks.length} failed; original text kept: ${error.message}`);
+                console.error(`  Chunk ${index + 1}/${chunks.length} failed; original text kept: ${printable(error.message)}`);
             }
         }
     }
 
     const workerCount = Math.min(options.parallel, chunks.length);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    if (fatalError) {
+        throw new Error(`${printable(fatalError.message)} (HTTP ${fatalError.status}; stopped without writing this file)`);
+    }
     return { srt: results.join('\n\n'), failed, total: chunks.length };
 }
 
@@ -390,8 +413,9 @@ function parseArgs(argv) {
 
     if (args.chunkSize !== undefined) args.chunkSize = Number.parseInt(args.chunkSize, 10);
     if (args.parallel !== undefined) args.parallel = Number.parseInt(args.parallel, 10);
-    if (!Number.isInteger(args.chunkSize) || args.chunkSize < 1) throw new Error('--chunk-size must be a positive integer');
-    if (!Number.isInteger(args.parallel) || args.parallel < 1) throw new Error('--parallel must be a positive integer');
+    const inRange = (value, [min, max]) => Number.isInteger(value) && value >= min && value <= max;
+    if (!inRange(args.chunkSize, CHUNK_SIZE_RANGE)) throw new Error(`--chunk-size must be a whole number from ${CHUNK_SIZE_RANGE.join(' to ')}`);
+    if (!inRange(args.parallel, PARALLEL_RANGE)) throw new Error(`--parallel must be a whole number from ${PARALLEL_RANGE.join(' to ')}`);
     return args;
 }
 
@@ -406,10 +430,11 @@ Options:
   --provider <name>           gemini, openrouter or openai (default: gemini)
   --base-url <url>            Server for --provider openai, e.g. http://localhost:11434/v1
   --model <name>              Model name (required for openai, otherwise a default is used)
-  --api-key <key>             API key (prefer GEMINI_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY;
-                              optional for openai). Use https for any server not on this machine.
-  --chunk-size <number>       Subtitle blocks per request (default: 20)
-  --parallel <number>         Concurrent requests (default: 5)
+  --api-key <key>             API key (prefer GEMINI_API_KEY, OPENROUTER_API_KEY or SRT_OPENAI_API_KEY;
+                              optional for openai, and OPENAI_API_KEY is deliberately not read).
+                              Use https for any server not on this machine.
+  --chunk-size <number>       Subtitle blocks per request, 10 to 200 (default: 20)
+  --parallel <number>         Concurrent requests, 1 to 100 (default: 5)
   --instructions <text>       Additional translation instructions
   --overwrite                 Replace existing output files
   --help                      Show this help
@@ -472,7 +497,16 @@ async function main() {
     );
 
     // Check every output path before the first request, so a batch never pays
-    // for translations it then refuses to save.
+    // for translations it then refuses to save. "ep1.srt" and "ep1.SRT" would
+    // both write ep1_<language>.srt, so catch clashes inside the batch too.
+    const seen = new Map();
+    for (const inputFile of inputFiles) {
+        const outputFile = outputFor(inputFile);
+        if (seen.has(outputFile)) {
+            throw new Error(`${path.basename(seen.get(outputFile))} and ${path.basename(inputFile)} would both be saved as ${outputFile}`);
+        }
+        seen.set(outputFile, inputFile);
+    }
     if (!args.overwrite) {
         for (const inputFile of inputFiles) {
             const outputFile = outputFor(inputFile);
@@ -519,7 +553,7 @@ async function main() {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
     main().catch((error) => {
-        console.error(`Error: ${error.message}`);
+        console.error(`Error: ${printable(error.message)}`);
         process.exitCode = 1;
     });
 }
