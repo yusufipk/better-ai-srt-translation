@@ -34,6 +34,9 @@ const RETRY_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 30000;
 // Self-hosted servers often run one request at a time, so queued chunks wait longer.
 const CUSTOM_SERVER_TIMEOUT_MS = 120000;
+const THINKING_LEVELS = ['low', 'medium', 'high'];
+// Gemini 2.5 takes a token budget instead of a level.
+const GEMINI_THINKING_BUDGETS = { low: 1024, medium: 8192, high: 24576 };
 const OPENROUTER_REFERER = 'https://github.com/yusufipk/better-ai-srt-translation';
 
 // Returns the chat completions URL for a base URL such as ".../v1", or null if
@@ -250,8 +253,25 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
+// Request fields for a thinking level; empty when none was given.
+// Same mapping as thinkingRequestFields() in src/app.js.
+export function thinkingRequestFields(provider, model, level) {
+    if (!THINKING_LEVELS.includes(level)) return {};
+    if (provider === 'openrouter') return { reasoning: { effort: level } };
+    if (provider === 'openai') return { reasoning_effort: level };
+    // Gemini 3 and later take a level. 2.5 and the "-latest" aliases take a
+    // budget, which newer models also still accept. Older Gemini and Gemma
+    // models cannot think, so they get nothing.
+    if (/gemini-([3-9]|\d{2,})/.test(model)) return { thinkingConfig: { thinkingLevel: level } };
+    if (/gemini-2\.5|gemini-.*latest/.test(model)) return { thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGETS[level] } };
+    return {};
+}
+
 async function translateChunk(chunk, index, options) {
-    const { apiKey, model, targetLanguage, customInstructions, provider, endpoint } = options;
+    const { apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinking: thinkingLevel } = options;
+    const thinking = thinkingRequestFields(provider, model, thinkingLevel);
+    // Thinking adds time before the first token, so give it the longer timeout too.
+    const longTimeout = provider === 'openai' || Boolean(thinkingLevel);
     const markedText = extractTextWithMarkers(chunk);
     const systemPrompt = buildSystemPrompt(targetLanguage, customInstructions);
     const openAIStyle = provider !== 'gemini';
@@ -266,7 +286,7 @@ async function translateChunk(chunk, index, options) {
             headers['X-Title'] = 'Better AI SRT Translation';
         }
         const url = provider === 'openrouter' ? 'https://openrouter.ai/api/v1/chat/completions' : endpoint;
-        const timeoutMs = provider === 'openai' ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+        const timeoutMs = longTimeout ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
         response = await fetchWithTimeout(url, {
             method: 'POST',
             headers,
@@ -276,7 +296,9 @@ async function translateChunk(chunk, index, options) {
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: markedText }
                 ],
-                temperature: 0.3
+                // OpenAI reasoning models reject any temperature but the default.
+                ...(thinkingLevel ? {} : { temperature: 0.3 }),
+                ...thinking
             })
         }, timeoutMs);
     } else {
@@ -289,10 +311,10 @@ async function translateChunk(chunk, index, options) {
                 body: JSON.stringify({
                     contents: [{ role: 'user', parts: [{ text: markedText }] }],
                     systemInstruction: { parts: [{ text: systemPrompt }] },
-                    generationConfig: { temperature: 0.3 }
+                    generationConfig: { temperature: 0.3, ...thinking }
                 })
             },
-            REQUEST_TIMEOUT_MS
+            longTimeout ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS
         );
     }
 
@@ -395,7 +417,7 @@ function parseArgs(argv) {
     };
     const valueOptions = new Set([
         '--input', '--output', '--api-key', '--provider', '--model', '--base-url',
-        '--language', '--target-language', '--chunk-size', '--parallel', '--instructions'
+        '--language', '--target-language', '--chunk-size', '--parallel', '--instructions', '--thinking'
     ]);
 
     for (let i = 0; i < argv.length; i++) {
@@ -414,6 +436,9 @@ function parseArgs(argv) {
 
     if (args.chunkSize !== undefined) args.chunkSize = Number.parseInt(args.chunkSize, 10);
     if (args.parallel !== undefined) args.parallel = Number.parseInt(args.parallel, 10);
+    if (args.thinking !== undefined && !THINKING_LEVELS.includes(args.thinking)) {
+        throw new Error(`--thinking must be one of: ${THINKING_LEVELS.join(', ')}`);
+    }
     const inRange = (value, [min, max]) => Number.isInteger(value) && value >= min && value <= max;
     if (!inRange(args.chunkSize, CHUNK_SIZE_RANGE)) throw new Error(`--chunk-size must be a whole number from ${CHUNK_SIZE_RANGE.join(' to ')}`);
     if (!inRange(args.parallel, PARALLEL_RANGE)) throw new Error(`--parallel must be a whole number from ${PARALLEL_RANGE.join(' to ')}`);
@@ -437,6 +462,7 @@ Options:
   --chunk-size <number>       Subtitle blocks per request, 10 to 200 (default: 20)
   --parallel <number>         Concurrent requests, 1 to 100 (default: 5)
   --instructions <text>       Additional translation instructions
+  --thinking <level>          low, medium or high (default: the model's own setting)
   --overwrite                 Replace existing output files
   --help                      Show this help
 
@@ -537,6 +563,7 @@ async function main() {
             endpoint,
             targetLanguage,
             customInstructions: args.instructions,
+            thinking: args.thinking,
             chunkSize: args.chunkSize,
             parallel: args.parallel
         });

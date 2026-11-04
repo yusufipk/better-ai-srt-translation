@@ -6,7 +6,8 @@ import {
     chatCompletionsUrl,
     createSmartChunks,
     formatTranslatedText,
-    parseSRT
+    parseSRT,
+    thinkingRequestFields
 } from './translate-srt.mjs';
 
 test('parses CRLF SRT files and preserves multiline subtitle text', () => {
@@ -48,4 +49,15 @@ test('builds the chat completions URL for a custom server', () => {
     assert.equal(chatCompletionsUrl('api.example.com/v1'), null);
     assert.equal(chatCompletionsUrl('https://user:pass@api.example.com/v1'), null);
     assert.equal(chatCompletionsUrl('file:///etc/passwd'), null);
+});
+
+test('maps thinking levels to each provider\'s request fields', () => {
+    assert.deepEqual(thinkingRequestFields('gemini', 'gemini-3.1-flash-lite', undefined), {});
+    assert.deepEqual(thinkingRequestFields('openrouter', 'x', 'high'), { reasoning: { effort: 'high' } });
+    assert.deepEqual(thinkingRequestFields('openai', 'x', 'low'), { reasoning_effort: 'low' });
+    assert.deepEqual(thinkingRequestFields('gemini', 'gemini-3.1-flash-lite', 'medium'), { thinkingConfig: { thinkingLevel: 'medium' } });
+    assert.deepEqual(thinkingRequestFields('gemini', 'gemini-2.5-flash', 'low'), { thinkingConfig: { thinkingBudget: 1024 } });
+    assert.deepEqual(thinkingRequestFields('gemini', 'gemini-flash-latest', 'high'), { thinkingConfig: { thinkingBudget: 24576 } });
+    assert.deepEqual(thinkingRequestFields('gemini', 'gemini-2.0-flash', 'low'), {});
+    assert.deepEqual(thinkingRequestFields('gemini', 'gemma-3-27b-it', 'low'), {});
 });
