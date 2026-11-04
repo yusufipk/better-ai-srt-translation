@@ -29,6 +29,7 @@ const elements = {
     dropZone: document.getElementById('dropZone'),
     fileInput: document.getElementById('fileInput'),
     dropText: document.getElementById('dropText'),
+    filePreview: document.getElementById('filePreview'),
     fileName: document.getElementById('fileName'),
     translateBtn: document.getElementById('translateBtn'),
     translateBtnText: document.getElementById('translateBtnText'),
@@ -58,6 +59,8 @@ const elements = {
 
 function init() {
     loadSavedSettings();
+    enhanceSelect(elements.apiProvider);
+    enhanceSelect(elements.targetLanguage);
     updateProviderUI();
     setupEventListeners();
 }
@@ -65,11 +68,11 @@ function init() {
 function updateProviderUI() {
     const provider = elements.apiProvider.value;
     if (provider === 'openrouter') {
-        elements.apiKey.placeholder = 'Enter your OpenRouter API key...';
-        elements.customModel.placeholder = `Custom model (leave empty for default: ${DEFAULT_MODEL_OPENROUTER})`;
+        elements.apiKey.placeholder = 'Paste your OpenRouter API key';
+        elements.customModel.placeholder = `Default: ${DEFAULT_MODEL_OPENROUTER}`;
     } else {
-        elements.apiKey.placeholder = 'Enter your Gemini API key...';
-        elements.customModel.placeholder = `Custom model (leave empty for default: ${DEFAULT_MODEL_GEMINI})`;
+        elements.apiKey.placeholder = 'Paste your Gemini API key';
+        elements.customModel.placeholder = `Default: ${DEFAULT_MODEL_GEMINI}`;
     }
 }
 
@@ -130,6 +133,12 @@ function saveSettings() {
 function setupEventListeners() {
     // File upload
     elements.dropZone.addEventListener('click', () => elements.fileInput.click());
+    elements.dropZone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            elements.fileInput.click();
+        }
+    });
     elements.dropZone.addEventListener('dragover', handleDragOver);
     elements.dropZone.addEventListener('dragleave', handleDragLeave);
     elements.dropZone.addEventListener('drop', handleDrop);
@@ -176,7 +185,9 @@ function handleDragOver(e) {
     elements.dropZone.classList.add('dragover');
 }
 
-function handleDragLeave() {
+function handleDragLeave(e) {
+    // Moving between child elements fires dragleave too; ignore those.
+    if (elements.dropZone.contains(e.relatedTarget)) return;
     elements.dropZone.classList.remove('dragover');
 }
 
@@ -207,8 +218,24 @@ function reprocessLoadedFile() {
         if (elements.optimizeTimings.checked) {
             optimizeTimings(srtBlocks);
         }
-        elements.dropText.textContent = `Loaded: ${srtBlocks.length} subtitle blocks`;
+        elements.dropText.textContent = `${srtBlocks.length} subtitle blocks`;
+        renderPreview(srtBlocks.slice(0, 8));
     }
+}
+
+// Shows the first few blocks so the user can confirm the right file loaded.
+function renderPreview(blocks) {
+    elements.filePreview.replaceChildren(...blocks.map(block => {
+        const item = document.createElement('li');
+        const time = document.createElement('time');
+        time.textContent = block.timestamp.replace(/,\d{3}/g, '');
+        const caption = document.createElement('span');
+        caption.className = 'caption';
+        caption.textContent = block.text.join('\n');
+        item.append(time, caption);
+        return item;
+    }));
+    elements.filePreview.classList.toggle('hidden', blocks.length === 0);
 }
 
 function processFile(file) {
@@ -221,6 +248,8 @@ function processFile(file) {
 
         elements.fileName.textContent = file.name;
         elements.fileName.classList.remove('hidden');
+        elements.dropZone.classList.add('loaded');
+        elements.dropZone.setAttribute('aria-label', `Loaded ${file.name}. Choose another SRT file`);
 
         updateTranslateButton();
     };
@@ -322,15 +351,23 @@ function log(message, type = 'info') {
     const time = new Date().toLocaleTimeString();
     const entry = document.createElement('div');
     entry.className = 'log-entry';
-    entry.innerHTML = `<span class="log-time">${time}</span><span class="log-${type}">${message}</span>`;
+    // Messages can include API error text, so never parse them as HTML.
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = time;
+    const messageSpan = document.createElement('span');
+    messageSpan.className = `log-${type}`;
+    messageSpan.textContent = message;
+    entry.append(timeSpan, messageSpan);
     elements.logContainer.insertBefore(entry, elements.logContainer.firstChild);
 }
 
 function updateProgress(completed, failed, total) {
     elements.completedChunks.textContent = completed;
     elements.failedChunks.textContent = failed;
+    elements.progressCard.classList.toggle('has-failed', failed > 0);
 
-    const percent = Math.round((completed + failed) / total * 100);
+    const percent = total > 0 ? Math.round((completed + failed) / total * 100) : 0;
     elements.progressPercent.textContent = `${percent}%`;
     elements.progressFill.style.width = `${percent}%`;
 }
@@ -656,6 +693,7 @@ async function startTranslation() {
     elements.logContainer.innerHTML = '';
 
     elements.totalChunks.textContent = chunks.length;
+    updateProgress(0, 0, chunks.length);
 
     // Create chunk indicators
     elements.chunksGrid.innerHTML = '';
