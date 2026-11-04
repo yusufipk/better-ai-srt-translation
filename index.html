@@ -54,10 +54,19 @@
                     <span class="field-label" title="Stored only in this browser's localStorage. Sent only to the provider you picked.">API key</span>
                     <input type="password" id="apiKey" class="control" autocomplete="off" spellcheck="false" placeholder="Paste your Gemini API key">
                 </label>
-                <label class="field">
-                    <span class="field-label">Model</span>
+                <div class="field">
+                    <label class="field-label" for="customModel" title="Pick from the provider's model list or type any model name.">Model</label>
                     <input type="text" id="customModel" class="control" spellcheck="false">
-                </label>
+                </div>
+                <div class="field">
+                    <span class="field-label" title="How much the model reasons before answering. Default sends nothing and leaves it to the model. Higher levels are slower and cost more, and not every model accepts every level.">Thinking</span>
+                    <select id="thinkingLevel" class="control">
+                        <option value="">Default</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                    </select>
+                </div>
             </section>
 
             <section class="group">
@@ -173,7 +182,7 @@
                     <p class="filename hidden" id="fileName"></p>
                     <p class="drop-count" id="dropText"></p>
                 </div>
-                <ol class="preview hidden" id="filePreview" aria-label="First subtitle blocks"></ol>
+                <ol class="preview hidden" id="filePreview" aria-label="Subtitle blocks"></ol>
             </div>
             <input type="file" id="fileInput" accept=".srt" class="hidden">
 
@@ -211,6 +220,7 @@
     </main>
 
     <script src="src/select.js"></script>
+    <script src="src/combobox.js"></script>
     <script src="src/app.js"></script>
 </body>
 

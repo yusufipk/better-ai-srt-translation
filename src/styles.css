@@ -411,11 +411,20 @@ textarea.control {
 /* The preview looks like the subtitles it holds: timecode above,
    text in a dark caption box. */
 
+/* contain: size keeps hundreds of blocks from stretching the page; the
+   list fills whatever height the drop zone gets and scrolls inside it. */
 .preview {
     list-style: none;
     display: grid;
+    align-content: start;
     gap: 0.6rem;
     margin-top: 1rem;
+    flex: 1 1 0;
+    min-height: 0;
+    contain: size;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.4rem;
 }
 
 .preview li {
@@ -423,6 +432,8 @@ textarea.control {
     grid-template-columns: 11.5rem 1fr;
     gap: 1rem;
     align-items: center;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 2.2rem;
 }
 
 .preview time {
@@ -683,6 +694,12 @@ textarea.control {
         flex: none;
     }
 
+    .preview {
+        contain: none;
+        flex: none;
+        max-height: 60vh;
+    }
+
     .preview li {
         grid-template-columns: 1fr;
         gap: 0.2rem;
@@ -765,3 +782,8 @@ textarea.control {
     background: var(--subtitle);
 }
 
+.dropdown-status {
+    padding: 0.45rem 0.65rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+}

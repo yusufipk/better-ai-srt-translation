@@ -16,6 +16,10 @@ const CUSTOM_SERVER_TIMEOUT_MS = 120000;  // 2 minutes
 const SETTINGS_FILE_FORMAT = 'better-ai-srt-translation-settings';
 const SETTINGS_FILE_VERSION = 1;
 const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
+const THINKING_LEVELS = ['low', 'medium', 'high'];
+// Gemini 2.5 takes a token budget instead of a level.
+const GEMINI_THINKING_BUDGETS = { low: 1024, medium: 8192, high: 24576 };
+const MODEL_LIST_TIMEOUT_MS = 15000;
 
 // Custom API Error class to propagate status and detailed payload
 class APIError extends Error {
@@ -35,6 +39,12 @@ let originalFileName = '';
 let isTranslating = false;
 let dropdowns = [];
 let settingsStatusTimer = null;
+let modelCombobox = null;
+// Model lists that loaded, keyed by provider, URL and key.
+const modelListCache = new Map();
+let modelListKey = '';
+// Bumped on every load and reset, so only the newest request may update the list.
+let modelListRequest = 0;
 
 // DOM Elements
 const elements = {
@@ -49,6 +59,7 @@ const elements = {
     downloadBtn: document.getElementById('downloadBtn'),
     apiKey: document.getElementById('apiKey'),
     customModel: document.getElementById('customModel'),
+    thinkingLevel: document.getElementById('thinkingLevel'),
     targetLanguage: document.getElementById('targetLanguage'),
     chunkSize: document.getElementById('chunkSize'),
     parallelRequests: document.getElementById('parallelRequests'),
@@ -77,7 +88,8 @@ const elements = {
 
 function init() {
     loadSavedSettings();
-    dropdowns = [enhanceSelect(elements.apiProvider), enhanceSelect(elements.targetLanguage)];
+    dropdowns = [enhanceSelect(elements.apiProvider), enhanceSelect(elements.thinkingLevel), enhanceSelect(elements.targetLanguage)];
+    modelCombobox = enhanceCombobox(elements.customModel, { onOpen: loadModelList });
     updateProviderUI();
     setupEventListeners();
 }
@@ -105,6 +117,7 @@ function loadSavedSettings() {
     const savedInstructions = localStorage.getItem('srt_custom_instructions');
     const savedOptimize = localStorage.getItem('srt_optimize_timings');
     const savedMerge = localStorage.getItem('srt_merge_subtitles');
+    const savedThinking = localStorage.getItem('srt_thinking_level');
 
     elements.apiProvider.value = PROVIDERS.includes(savedProvider) ? savedProvider : 'gemini';
 
@@ -120,6 +133,7 @@ function loadSavedSettings() {
     loadProviderSettings();
     elements.apiBaseUrl.value = (localStorage.getItem('srt_openai_base_url') || '').trim();
 
+    elements.thinkingLevel.value = THINKING_LEVELS.includes(savedThinking) ? savedThinking : '';
     if (savedLanguage) elements.targetLanguage.value = savedLanguage.trim();
     if (savedChunkSize) elements.chunkSize.value = savedChunkSize.trim();
     if (savedParallel) elements.parallelRequests.value = savedParallel.trim();
@@ -155,6 +169,7 @@ function saveSettings() {
     localStorage.setItem(`srt_${provider}_api_key`, elements.apiKey.value.trim());
     localStorage.setItem(`srt_${provider}_model`, elements.customModel.value.trim());
     localStorage.setItem('srt_openai_base_url', elements.apiBaseUrl.value.trim());
+    localStorage.setItem('srt_thinking_level', elements.thinkingLevel.value);
     localStorage.setItem('srt_target_language', elements.targetLanguage.value);
     localStorage.setItem('srt_chunk_size', elements.chunkSize.value);
     localStorage.setItem('srt_parallel_requests', elements.parallelRequests.value);
@@ -181,6 +196,7 @@ function exportSettings() {
         version: SETTINGS_FILE_VERSION,
         provider: elements.apiProvider.value,
         providers,
+        thinkingLevel: elements.thinkingLevel.value,
         targetLanguage: elements.targetLanguage.value,
         // An emptied field exports as null, which import skips instead of clamping to the minimum.
         chunkSize: elements.chunkSize.value === '' ? null : Number(elements.chunkSize.value),
@@ -234,6 +250,10 @@ function applySettingsFile(data) {
     }
     localStorage.setItem('srt_openai_base_url', text(providers.openai && providers.openai.baseUrl));
 
+    // Files from before the setting existed leave the current level alone.
+    if (data.thinkingLevel === '' || THINKING_LEVELS.includes(data.thinkingLevel)) {
+        localStorage.setItem('srt_thinking_level', data.thinkingLevel);
+    }
     const language = text(data.targetLanguage);
     if (Array.from(elements.targetLanguage.options).some(option => option.value === language)) {
         localStorage.setItem('srt_target_language', language);
@@ -263,6 +283,7 @@ async function importSettings(file) {
         loadSavedSettings();
         dropdowns.forEach(dropdown => dropdown.sync());
         updateProviderUI();
+        resetModelList();
         reprocessLoadedFile();
         updateTranslateButton();
         updateTranslateButtonText();
@@ -310,6 +331,7 @@ function setupEventListeners() {
     elements.apiKey.addEventListener('input', () => {
         saveSettings();
         updateTranslateButton();
+        resetModelList();
     });
     elements.apiProvider.addEventListener('change', () => {
         // Key and model fields already saved themselves under the previous
@@ -318,7 +340,9 @@ function setupEventListeners() {
         saveSettings();
         updateProviderUI();
         updateTranslateButton();
+        resetModelList();
     });
+    elements.thinkingLevel.addEventListener('change', saveSettings);
     elements.customModel.addEventListener('input', () => {
         saveSettings();
         updateTranslateButton();
@@ -326,6 +350,7 @@ function setupEventListeners() {
     elements.apiBaseUrl.addEventListener('input', () => {
         saveSettings();
         updateTranslateButton();
+        resetModelList();
     });
     elements.targetLanguage.addEventListener('change', () => {
         saveSettings();
@@ -432,11 +457,11 @@ function reprocessLoadedFile() {
             optimizeTimings(srtBlocks);
         }
         elements.dropText.textContent = `${srtBlocks.length} subtitle blocks`;
-        renderPreview(srtBlocks.slice(0, 8));
+        renderPreview(srtBlocks);
     }
 }
 
-// Shows the first few blocks so the user can confirm the right file loaded.
+// Shows every block; the list scrolls inside the drop zone.
 function renderPreview(blocks) {
     elements.filePreview.replaceChildren(...blocks.map(block => {
         const item = document.createElement('li');
@@ -572,6 +597,114 @@ function chatCompletionsUrl(baseUrl) {
     const path = url.pathname.replace(/\/+$/, '');
     url.pathname = path.endsWith('/chat/completions') ? path : `${path}/chat/completions`;
     return url.toString();
+}
+
+// Returns the model list URL next to a base URL's chat completions endpoint.
+function modelsUrl(baseUrl) {
+    const endpoint = chatCompletionsUrl(baseUrl);
+    if (!endpoint) return null;
+    const url = new URL(endpoint);
+    url.pathname = url.pathname.replace(/\/chat\/completions$/, '/models');
+    return url.toString();
+}
+
+// Describes where the current provider lists its models, or explains why it cannot yet.
+function modelListSource() {
+    const provider = elements.apiProvider.value;
+    const apiKey = elements.apiKey.value.trim();
+    if (provider === 'openrouter') {
+        // OpenRouter's list is public; the key is not needed or sent.
+        return {
+            key: 'openrouter',
+            url: 'https://openrouter.ai/api/v1/models',
+            headers: {},
+            parse: (data) => (data.data || [])
+                .filter(model => !model.architecture?.output_modalities || model.architecture.output_modalities.includes('text'))
+                .map(model => model.id)
+        };
+    }
+    if (provider === 'gemini') {
+        if (!apiKey) return { message: 'Paste an API key to load the model list.' };
+        return {
+            key: `gemini|${apiKey}`,
+            url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
+            headers: { 'x-goog-api-key': apiKey },
+            parse: (data) => (data.models || [])
+                .filter(model => (model.supportedGenerationMethods || []).includes('generateContent'))
+                .map(model => String(model.name || '').replace(/^models\//, ''))
+        };
+    }
+    const url = modelsUrl(elements.apiBaseUrl.value);
+    if (!url) return { message: 'Enter the base URL to load the model list.' };
+    return {
+        key: `openai|${url}|${apiKey}`,
+        url,
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        parse: (data) => (data.data || data.models || []).map(model => model.id || model.name)
+    };
+}
+
+// Fills the model suggestions for the current provider. Lists are cached, so
+// reopening the field does not refetch; a failed load is retried next time.
+async function loadModelList() {
+    const source = modelListSource();
+    if (source.message) {
+        modelListKey = '';
+        modelCombobox.setStatus(source.message);
+        return;
+    }
+    if (modelListCache.has(source.key)) {
+        modelListKey = source.key;
+        modelCombobox.setItems(modelListCache.get(source.key));
+        return;
+    }
+    if (modelListKey === source.key) return; // Already loading.
+    modelListKey = source.key;
+    const request = ++modelListRequest;
+    modelCombobox.setStatus('Loading models...');
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), MODEL_LIST_TIMEOUT_MS);
+    try {
+        const response = await fetch(source.url, { headers: source.headers, signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const ids = source.parse(await response.json())
+            .filter(id => typeof id === 'string' && id.trim())
+            .map(id => id.trim());
+        const models = [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+        if (!models.length) throw new Error('the list is empty');
+        modelListCache.set(source.key, models);
+        if (request === modelListRequest) modelCombobox.setItems(models);
+    } catch (error) {
+        if (request !== modelListRequest) return;
+        modelListKey = '';
+        const reason = error.name === 'AbortError' ? 'timed out' : error.message;
+        modelCombobox.setStatus(`Could not load the model list (${reason}). Type the model name.`);
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+// Provider, key or base URL changed: drop the old suggestions. The new list
+// loads only when the Model field is opened, never while a base URL is being
+// typed, so the key is not sent to a half-typed host such as "example.co".
+function resetModelList() {
+    modelListRequest++;
+    modelListKey = '';
+    modelCombobox.setItems([]);
+}
+
+// Request fields for the chosen thinking level; empty when left at Default.
+function thinkingRequestFields(provider, model, level) {
+    if (!THINKING_LEVELS.includes(level)) return {};
+    if (provider === 'openrouter') return { reasoning: { effort: level } };
+    if (provider === 'openai') return { reasoning_effort: level };
+    // Gemini 3 and later take a level. 2.5 and the "-latest" aliases take a
+    // budget, which newer models also still accept. Older Gemini and Gemma
+    // models cannot think, so they get nothing.
+    if (/gemini-([3-9]|\d{2,})/.test(model)) return { thinkingConfig: { thinkingLevel: level } };
+    if (/gemini-2\.5|gemini-.*latest/.test(model)) return { thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGETS[level] } };
+    return {};
 }
 
 function isReadyToTranslate() {
@@ -718,7 +851,7 @@ function parseMarkedTranslation(blocks, translatedText) {
     return result;
 }
 
-async function translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint) {
+async function translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel) {
     // Extract text with block markers
     const markedText = extractTextWithMarkers(chunk);
     const systemPrompt = buildSystemPrompt(targetLanguage, customInstructions);
@@ -726,7 +859,9 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
     console.log(`[Chunk ${index + 1}] Sending API request...`);
 
     // Create abort controller for timeout
-    const timeoutMs = provider === 'openai' ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+    // Thinking adds time before the first token, so give it the longer timeout too.
+    const timeoutMs = provider === 'openai' || thinkingLevel ? CUSTOM_SERVER_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+    const thinking = thinkingRequestFields(provider, model, thinkingLevel);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
         console.log(`[Chunk ${index + 1}] TIMEOUT - aborting request`);
@@ -752,7 +887,9 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: markedText }
                     ],
-                    temperature: 0.3
+                    // OpenAI reasoning models reject any temperature but the default.
+                    ...(thinkingLevel ? {} : { temperature: 0.3 }),
+                    ...thinking
                 }),
                 signal: controller.signal
             });
@@ -777,7 +914,8 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
                         ]
                     },
                     generationConfig: {
-                        temperature: 0.3
+                        temperature: 0.3,
+                        ...thinking
                     }
                 }),
                 signal: controller.signal
@@ -872,13 +1010,13 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
 }
 
 // Retry wrapper with exponential backoff, and smart rate-limit (429) delay handling
-async function translateChunkWithRetry(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, onRetry) {
+async function translateChunkWithRetry(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel, onRetry) {
     let lastError;
     let maxAttempts = MAX_RETRIES;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            return await translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint);
+            return await translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel);
         } catch (error) {
             lastError = error;
 
@@ -944,6 +1082,7 @@ async function runTranslation() {
     const targetChunkSize = parseInt(elements.chunkSize.value) || 50;
     const maxParallel = parseInt(elements.parallelRequests.value) || DEFAULT_PARALLEL;
     const customInstructions = elements.customInstructions.value;
+    const thinkingLevel = elements.thinkingLevel.value;
 
     // Create chunks
     const chunks = createSmartChunks(srtBlocks, targetChunkSize);
@@ -968,7 +1107,7 @@ async function runTranslation() {
     });
 
     log(`Starting translation to ${targetLanguage}...`, 'info');
-    log(`Model: ${model}`, 'info');
+    log(thinkingLevel ? `Model: ${model} | Thinking: ${thinkingLevel}` : `Model: ${model}`, 'info');
     if (provider === 'openai') log(`Endpoint: ${endpoint}`, 'info');
     log(`Chunks: ${chunks.length} | Size: ~${targetChunkSize} | Parallel: ${maxParallel}`, 'info');
 
@@ -994,6 +1133,7 @@ async function runTranslation() {
                 customInstructions,
                 provider,
                 endpoint,
+                thinkingLevel,
                 (idx, attempt, delay, errorMsg) => {
                     setChunkStatus(idx, 'error');
                     const waitSec = Math.round(delay / 1000);
