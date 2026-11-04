@@ -182,8 +182,9 @@ function exportSettings() {
         provider: elements.apiProvider.value,
         providers,
         targetLanguage: elements.targetLanguage.value,
-        chunkSize: Number(elements.chunkSize.value),
-        parallelRequests: Number(elements.parallelRequests.value),
+        // An emptied field exports as null, which import skips instead of clamping to the minimum.
+        chunkSize: elements.chunkSize.value === '' ? null : Number(elements.chunkSize.value),
+        parallelRequests: elements.parallelRequests.value === '' ? null : Number(elements.parallelRequests.value),
         customInstructions: elements.customInstructions.value,
         mergeSubtitles: elements.mergeSubtitles.checked,
         optimizeTimings: elements.optimizeTimings.checked
@@ -207,9 +208,11 @@ function clampToInput(value, input) {
     return Math.min(Number(input.max), Math.max(Number(input.min), number));
 }
 
-// Writes an imported settings object to localStorage. The file replaces the
-// stored settings as a whole: a provider the file has no key for loses its
+// Writes an imported settings object to localStorage. Keys, models and the
+// base URL are replaced as a set: a provider the file has no key for loses its
 // saved key, so an old key never travels to a base URL that came from the file.
+// Language, chunk size and parallel requests change only when the file has a
+// valid value; otherwise the current one stays.
 function applySettingsFile(data) {
     if (!data || typeof data !== 'object' || data.format !== SETTINGS_FILE_FORMAT) {
         throw new Error('This is not a settings file exported from this app.');
@@ -263,7 +266,10 @@ async function importSettings(file) {
         reprocessLoadedFile();
         updateTranslateButton();
         updateTranslateButtonText();
-        showSettingsStatus('Settings imported.');
+        // A shared file could point the custom provider at someone else's
+        // server, so say where requests will now go.
+        const endpoint = elements.apiProvider.value === 'openai' ? chatCompletionsUrl(elements.apiBaseUrl.value) : null;
+        showSettingsStatus(endpoint ? `Settings imported. Requests will go to ${new URL(endpoint).host}.` : 'Settings imported.');
     } catch (error) {
         showSettingsStatus(`Could not import settings: ${error.message}`, true);
     } finally {
@@ -277,9 +283,9 @@ function showSettingsStatus(message, isError = false) {
     const status = elements.settingsFileStatus;
     status.textContent = message;
     status.classList.toggle('error', isError);
-    status.classList.remove('hidden');
-    // Success notes fade out; errors stay until the next action.
-    if (!isError) settingsStatusTimer = setTimeout(() => status.classList.add('hidden'), 4000);
+    // Success notes clear after a while; errors stay until the next action.
+    // The element is never display:none, so screen readers announce updates.
+    if (!isError) settingsStatusTimer = setTimeout(() => { status.textContent = ''; }, 6000);
 }
 
 // ============================================

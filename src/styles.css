@@ -407,6 +407,10 @@ textarea.control {
 
 /* Settings file */
 
+.settings-file {
+    position: relative;
+}
+
 .file-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -420,6 +424,16 @@ textarea.control {
 
 .settings-file-status.error {
     color: var(--error);
+}
+
+/* Collapsed while empty but kept in the accessibility tree, so the live
+   region exists before its first message. */
+.settings-file-status:empty {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
 }
 
 /* Progress */
