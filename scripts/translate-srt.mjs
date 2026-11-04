@@ -18,8 +18,9 @@ const API_KEY_ENV = { gemini: 'GEMINI_API_KEY', openrouter: 'OPENROUTER_API_KEY'
 const CHUNK_SIZE_RANGE = [10, 200];
 const PARALLEL_RANGE = [1, 100];
 // A bad key, an unknown model or a malformed request fails the same way for
-// every chunk, so retrying or carrying on only burns requests.
-const FATAL_STATUSES = new Set([400, 401, 403, 404]);
+// every chunk (402 is OpenRouter out of credits), so retrying or carrying on
+// only burns requests.
+const FATAL_STATUSES = new Set([400, 401, 402, 403, 404]);
 
 // Server error text is printed to the terminal; drop control characters so a
 // response cannot inject escape sequences.
