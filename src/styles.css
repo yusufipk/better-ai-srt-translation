@@ -788,3 +788,178 @@ textarea.control {
     color: var(--muted);
     font-size: 0.85rem;
 }
+
+/* Several files: a list under the drop zone, one row per file, each with its
+   own download, retry and remove buttons. */
+
+.drop-status {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: -0.4rem;
+}
+
+.drop-status.error {
+    color: var(--error);
+}
+
+.drop-status:empty {
+    display: none;
+}
+
+.queue {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.1rem 1.25rem;
+    display: grid;
+    gap: 0.75rem;
+}
+
+.queue-head {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.queue-summary {
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+    margin-right: auto;
+}
+
+.btn-small {
+    width: auto;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.82rem;
+}
+
+.btn-small:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.queue-list {
+    list-style: none;
+    display: grid;
+    gap: 2px;
+    max-height: 320px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.queue-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.3rem 0.4rem 0.3rem 0.6rem;
+    border-radius: 8px;
+}
+
+.queue-item.selected {
+    background: var(--surface-sunk);
+}
+
+.queue-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--track);
+}
+
+.queue-item.translating .queue-dot { background: color-mix(in srgb, var(--subtitle) 55%, var(--track)); }
+.queue-item.done .queue-dot { background: var(--subtitle); }
+.queue-item.partial .queue-dot { background: linear-gradient(90deg, var(--subtitle) 50%, var(--error) 50%); }
+.queue-item.failed .queue-dot { background: var(--error); }
+
+@media (prefers-reduced-motion: no-preference) {
+    .queue-item.translating .queue-dot {
+        animation: working 1.2s ease-in-out infinite;
+    }
+}
+
+.queue-name {
+    background: none;
+    border: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.92rem;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0.2rem 0;
+}
+
+.queue-name:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.queue-detail {
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.queue-item.failed .queue-detail,
+.queue-item.partial .queue-detail,
+.queue-item.has-error .queue-detail {
+    color: var(--error);
+}
+
+.queue-actions {
+    display: flex;
+    min-width: 2rem;
+    justify-content: flex-end;
+}
+
+.queue-actions .icon-button {
+    padding: 0.3rem;
+}
+
+.actions {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.actions .btn-primary {
+    flex: 1;
+}
+
+.btn-stop {
+    width: auto;
+    padding-inline: 1.5rem;
+    background: var(--surface);
+    color: var(--error);
+    border: 1px solid var(--line);
+}
+
+.btn-stop:hover {
+    border-color: var(--error);
+}
+
+@media (max-width: 860px) {
+    .queue-item {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+
+    .queue-detail {
+        grid-column: 2 / 4;
+        grid-row: 2;
+        max-width: none;
+    }
+}
+
+/* Locked while a translation runs. */
+.control:disabled,
+.toggle input:disabled ~ span {
+    opacity: 0.55;
+    cursor: not-allowed;
+}

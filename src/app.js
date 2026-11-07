@@ -13,11 +13,6 @@ const RETRY_DELAY_MS = 1000;  // 1 second
 const REQUEST_TIMEOUT_MS = 30000;  // 30 seconds
 // Self-hosted servers often run one request at a time, so queued chunks wait longer.
 const CUSTOM_SERVER_TIMEOUT_MS = 120000;  // 2 minutes
-const RLM = '\u200F';
-const RLE = '\u202B';
-const PDF = '\u202C';
-// Netflix and BBC style guides cap a subtitle line at about 42 characters.
-const MAX_LINE_CHARS = 42;
 const SETTINGS_FILE_FORMAT = 'better-ai-srt-translation-settings';
 const SETTINGS_FILE_VERSION = 1;
 const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
@@ -25,6 +20,10 @@ const THINKING_LEVELS = ['low', 'medium', 'high'];
 // Gemini 2.5 takes a token budget instead of a level.
 const GEMINI_THINKING_BUDGETS = { low: 1024, medium: 8192, high: 24576 };
 const MODEL_LIST_TIMEOUT_MS = 15000;
+// A subtitle file is a few hundred KB at most; anything far larger is not one.
+const MAX_SRT_BYTES = 20 * 1024 * 1024;
+// Guards against a dropped folder tree that links back into itself.
+const MAX_FOLDER_DEPTH = 32;
 
 // Custom API Error class to propagate status and detailed payload
 class APIError extends Error {
@@ -37,10 +36,17 @@ class APIError extends Error {
 }
 
 // State
-let srtContent = '';
-let srtBlocks = [];
-let translatedResult = '';
-let originalFileName = '';
+// One job per file: { id, name, path, key, content, blockCount, status,
+// result, langCode, failedChunks, totalChunks, error }. Status is 'queued',
+// 'translating', 'done', 'partial' (some chunks kept their original text) or
+// 'failed' (nothing usable came back).
+let jobs = [];
+let nextJobId = 1;
+let selectedJobId = null;
+let activeJob = null;
+// Aborted by the Stop button.
+let queueAbort = null;
+let dropStatusTimer = null;
 let isTranslating = false;
 let dropdowns = [];
 let settingsStatusTimer = null;
@@ -60,8 +66,16 @@ const elements = {
     fileName: document.getElementById('fileName'),
     translateBtn: document.getElementById('translateBtn'),
     translateBtnText: document.getElementById('translateBtnText'),
+    stopBtn: document.getElementById('stopBtn'),
     progressCard: document.getElementById('progressCard'),
+    progressTitle: document.getElementById('progressTitle'),
     downloadBtn: document.getElementById('downloadBtn'),
+    downloadBtnText: document.getElementById('downloadBtnText'),
+    dropStatus: document.getElementById('dropStatus'),
+    queueCard: document.getElementById('queueCard'),
+    queueList: document.getElementById('queueList'),
+    queueSummary: document.getElementById('queueSummary'),
+    clearQueueBtn: document.getElementById('clearQueueBtn'),
     apiKey: document.getElementById('apiKey'),
     customModel: document.getElementById('customModel'),
     thinkingLevel: document.getElementById('thinkingLevel'),
@@ -298,7 +312,6 @@ async function importSettings(file) {
         resetModelList();
         reprocessLoadedFile();
         updateTranslateButton();
-        updateTranslateButtonText();
         // A shared file could point the custom provider at someone else's
         // server, so say where requests will now go.
         const endpoint = elements.apiProvider.value === 'openai' ? chatCompletionsUrl(elements.apiBaseUrl.value) : null;
@@ -386,7 +399,14 @@ function setupEventListeners() {
 
     // Actions
     elements.translateBtn.addEventListener('click', startTranslation);
-    elements.downloadBtn.addEventListener('click', downloadResult);
+    elements.stopBtn.addEventListener('click', stopTranslation);
+    elements.downloadBtn.addEventListener('click', downloadAll);
+    elements.clearQueueBtn.addEventListener('click', clearQueue);
+    elements.queueList.addEventListener('click', handleQueueClick);
+    // Results live only in this tab, so closing it would lose them.
+    window.addEventListener('beforeunload', (e) => {
+        if (isTranslating || jobs.some(job => job.result && !job.downloaded)) e.preventDefault();
+    });
     elements.exportSettingsBtn.addEventListener('click', exportSettings);
     elements.importSettingsBtn.addEventListener('click', () => elements.settingsFileInput.click());
     elements.settingsFileInput.addEventListener('change', (e) => importSettings(e.target.files[0]));
@@ -446,33 +466,171 @@ function handleDragLeave(e) {
 function handleDrop(e) {
     e.preventDefault();
     elements.dropZone.classList.remove('dragover');
-    const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.srt')) {
-        processFile(file);
-    }
+    // Entries must be taken before the first await; the browser empties the
+    // drop data once the event handler returns.
+    addFiles(filesFromDrop(e.dataTransfer));
 }
 
 function handleFileSelect(e) {
-    const file = e.target.files[0];
-    if (file) processFile(file);
+    const files = Array.from(e.target.files).map(file => ({ file, path: file.name }));
+    // Allow choosing the same files again.
+    e.target.value = '';
+    addFiles(Promise.resolve(files));
+}
+
+// Lists dropped files with their path inside any dropped folder. Folders are
+// walked recursively; an entry that cannot be read is skipped, not fatal.
+function filesFromDrop(dataTransfer) {
+    const items = Array.from(dataTransfer.items || []).filter(item => item.kind === 'file');
+    const entries = items.map(item => item.webkitGetAsEntry && item.webkitGetAsEntry()).filter(Boolean);
+    if (entries.length === 0) {
+        return Promise.resolve(Array.from(dataTransfer.files).map(file => ({ file, path: file.name })));
+    }
+    const found = [];
+    found.unreadable = 0;
+    const walk = async (entry, depth) => {
+        try {
+            if (entry.isFile) {
+                const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+                found.push({ file, path: entry.fullPath.replace(/^\/+/, '') || file.name });
+            } else if (entry.isDirectory && depth >= MAX_FOLDER_DEPTH) {
+                found.unreadable++;
+            } else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                // readEntries returns at most about 100 entries per call.
+                for (;;) {
+                    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+                    if (batch.length === 0) break;
+                    for (const child of batch) await walk(child, depth + 1);
+                }
+            }
+        } catch (error) {
+            // Counted, so the summary says something was missed.
+            found.unreadable++;
+            console.warn(`Could not read ${entry.fullPath}:`, error);
+        }
+    };
+    return (async () => {
+        for (const entry of entries) await walk(entry, 0);
+        return found;
+    })();
+}
+
+function isSrtName(name) {
+    return /\.srt$/i.test(name);
+}
+
+// Adds .srt files to the queue in path order, so "Episode 2" comes before
+// "Episode 10". Other files, oversized files and files already in the list
+// are skipped and counted.
+async function addFiles(filesPromise) {
+    let candidates;
+    try {
+        candidates = await filesPromise;
+    } catch (error) {
+        showDropStatus(`Could not read the dropped items: ${error.message}`, true);
+        return;
+    }
+    const known = new Set(jobs.map(job => job.key));
+    const jobsBefore = jobs.length;
+    let notSrt = 0;
+    let tooLarge = 0;
+    let duplicate = 0;
+    const accepted = [];
+    for (const { file, path } of candidates) {
+        if (!isSrtName(file.name)) { notSrt++; continue; }
+        if (file.size > MAX_SRT_BYTES) { tooLarge++; continue; }
+        const key = `${path}|${file.size}|${file.lastModified}`;
+        if (known.has(key)) { duplicate++; continue; }
+        known.add(key);
+        accepted.push({ file, path, key });
+    }
+    accepted.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+
+    const read = await Promise.all(accepted.map(async ({ file, path, key }) => {
+        try {
+            return { file, path, key, content: await file.text() };
+        } catch (error) {
+            return { file, path, key, error };
+        }
+    }));
+    let unreadable = candidates.unreadable || 0;
+    for (const item of read) {
+        if (item.error) { unreadable++; continue; }
+        // Another drop may have added the same file while this one was reading.
+        if (jobs.some(job => job.key === item.key)) { duplicate++; continue; }
+        const job = {
+            id: nextJobId++,
+            name: item.file.name,
+            path: item.path,
+            key: item.key,
+            content: item.content,
+            blockCount: 0,
+            status: 'queued',
+            result: null,
+            langCode: '',
+            failedChunks: 0,
+            totalChunks: 0,
+            error: '',
+            doneChunks: 0,
+            downloaded: false
+        };
+        job.blockCount = prepareBlocks(job.content).length;
+        jobs.push(job);
+        if (selectedJobId === null) selectedJobId = job.id;
+    }
+    // Show the first new file, unless a translation is being watched.
+    const added = jobs.length - jobsBefore;
+    if (added > 0 && !isTranslating) selectedJobId = jobs[jobs.length - added].id;
+
+    const skipped = [
+        notSrt && `${notSrt} not .srt`,
+        tooLarge && `${tooLarge} over ${MAX_SRT_BYTES / 1024 / 1024} MB`,
+        duplicate && `${duplicate} already in the list`,
+        unreadable && `${unreadable} unreadable`
+    ].filter(Boolean);
+    if (added === 0 && skipped.length === 0) showDropStatus('No .srt files found.', true);
+    else if (skipped.length) showDropStatus(`${added} added, skipped ${skipped.join(', ')}.`, added === 0);
+    else if (added > 1) showDropStatus(`${added} files added.`);
+    else showDropStatus('');
+
+    renderWorkspace();
+}
+
+function showDropStatus(message, isError = false) {
+    clearTimeout(dropStatusTimer);
+    elements.dropStatus.textContent = message;
+    elements.dropStatus.classList.toggle('error', isError);
+    if (message && !isError) dropStatusTimer = setTimeout(() => { elements.dropStatus.textContent = ''; }, 6000);
 }
 
 // ============================================
 // File Processing
 // ============================================
 
+// Parses a file and applies the merge and timing switches. Reads the switches
+// unless a settings snapshot from the start of a translation is given.
+function prepareBlocks(content, options = null) {
+    const merge = options ? options.mergeSubtitles : elements.mergeSubtitles.checked;
+    const optimize = options ? options.optimizeTimings : elements.optimizeTimings.checked;
+    const blocks = parseSRT(content);
+    if (merge) mergeShortSubtitles(blocks);
+    if (optimize) optimizeTimings(blocks);
+    return blocks;
+}
+
+// The merge and timing switches changed: recount files that have not been
+// translated yet and refresh the preview.
 function reprocessLoadedFile() {
-    if (srtContent) {
-        srtBlocks = parseSRT(srtContent);
-        if (elements.mergeSubtitles.checked) {
-            mergeShortSubtitles(srtBlocks);
-        }
-        if (elements.optimizeTimings.checked) {
-            optimizeTimings(srtBlocks);
-        }
-        elements.dropText.textContent = `${srtBlocks.length} subtitle blocks`;
-        renderPreview(srtBlocks);
+    for (const job of jobs) {
+        if (job.status === 'queued') job.blockCount = prepareBlocks(job.content).length;
     }
+    elements.filePreview.dataset.stale = 'true';
+    renderWorkspace();
+}
+
+function selectedJob() {
+    return jobs.find(job => job.id === selectedJobId) || null;
 }
 
 // Shows every block; the list scrolls inside the drop zone.
@@ -490,23 +648,158 @@ function renderPreview(blocks) {
     elements.filePreview.classList.toggle('hidden', blocks.length === 0);
 }
 
-function processFile(file) {
-    originalFileName = file.name;
-    const reader = new FileReader();
+// Redraws everything that depends on the file list.
+function renderWorkspace() {
+    const job = selectedJob();
+    const shown = job ? job.id : null;
+    if (elements.filePreview.dataset.job !== String(shown) || elements.filePreview.dataset.stale === 'true') {
+        const blocks = job ? prepareBlocks(job.content) : [];
+        renderPreview(blocks);
+        elements.dropText.textContent = job ? `${blocks.length} subtitle blocks` : '';
+        elements.filePreview.dataset.job = String(shown);
+        elements.filePreview.dataset.stale = 'false';
+    }
+    elements.fileName.textContent = job ? job.path : '';
+    elements.fileName.classList.toggle('hidden', !job);
+    elements.dropZone.classList.toggle('loaded', Boolean(job));
+    elements.dropZone.setAttribute('aria-label', job ? `Showing ${job.path}. Add more SRT files` : 'Add SRT files');
 
-    reader.onload = (e) => {
-        srtContent = e.target.result;
-        reprocessLoadedFile();
+    renderQueue();
+    updateTranslateButton();
+    updateDownloadButton();
+}
 
-        elements.fileName.textContent = file.name;
-        elements.fileName.classList.remove('hidden');
-        elements.dropZone.classList.add('loaded');
-        elements.dropZone.setAttribute('aria-label', `Loaded ${file.name}. Choose another SRT file`);
+const STATUS_LABELS = { queued: 'Queued', translating: 'Translating', done: 'Done', partial: 'Partly translated', failed: 'Failed' };
 
-        updateTranslateButton();
-    };
+const ICONS = {
+    download: '<path d="M12 4v11m0 0-4-4m4 4 4-4" /><path d="M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />',
+    retry: '<path d="M4 12a8 8 0 0 1 14-5.3L20 9" /><path d="M20 4v5h-5" /><path d="M20 12a8 8 0 0 1-14 5.3L4 15" /><path d="M4 20v-5h5" />',
+    remove: '<path d="M6 6l12 12M18 6 6 18" />'
+};
 
-    reader.readAsText(file);
+function iconButton(action, label, jobId) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'icon-button';
+    button.dataset.action = action;
+    button.dataset.job = jobId;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    // ICONS holds fixed markup from this file, never file names or API text.
+    button.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[action]}</svg>`;
+    return button;
+}
+
+function jobDetail(job) {
+    if (job.error && job.result) return job.error;
+    if (job.status === 'queued') return job.result ? `${job.blockCount} blocks, ${job.langCode} result kept until replaced` : `${job.blockCount} blocks`;
+    if (job.status === 'translating') return 'Starting';
+    if (job.status === 'done') return job.langCode;
+    if (job.status === 'partial') return `${job.failedChunks} of ${job.totalChunks} chunks kept the original text`;
+    return job.error || 'Failed';
+}
+
+// The list appears once there is more than one file. Every row carries its
+// own download, retry and remove buttons, so one failed file never blocks
+// the others.
+function renderQueue() {
+    elements.queueCard.classList.toggle('hidden', jobs.length < 2);
+    const finished = jobs.filter(job => job.result).length;
+    elements.queueSummary.textContent = `${finished} of ${jobs.length} ready`;
+    updateDownloadButton();
+    elements.clearQueueBtn.disabled = isTranslating;
+
+    elements.queueList.replaceChildren(...jobs.map(job => {
+        const item = document.createElement('li');
+        item.className = `queue-item ${job.status}`;
+        item.dataset.job = job.id;
+        if (job.id === selectedJobId) item.classList.add('selected');
+
+        const dot = document.createElement('span');
+        dot.className = 'queue-dot';
+        dot.title = STATUS_LABELS[job.status];
+        dot.setAttribute('role', 'img');
+        dot.setAttribute('aria-label', STATUS_LABELS[job.status]);
+
+        const name = document.createElement('button');
+        name.type = 'button';
+        name.className = 'queue-name';
+        name.dataset.action = 'select';
+        name.dataset.job = job.id;
+        name.textContent = job.path;
+        name.title = `Preview ${job.path}`;
+
+        const detail = document.createElement('span');
+        detail.className = 'queue-detail';
+        detail.textContent = jobDetail(job);
+        if (job.status === 'failed' || job.status === 'partial' || job.error) detail.title = detail.textContent;
+        if (job.error) item.classList.add('has-error');
+
+        const actions = document.createElement('span');
+        actions.className = 'queue-actions';
+        if (job.result) actions.append(iconButton('download', `Download ${outputName(job)}`, job.id));
+        if ((job.status === 'failed' || job.status === 'partial' || job.error) && job !== activeJob && job.status !== 'queued') actions.append(iconButton('retry', 'Translate this file again', job.id));
+        if (job !== activeJob) actions.append(iconButton('remove', 'Remove from the list', job.id));
+
+        item.append(dot, name, detail, actions);
+        return item;
+    }));
+}
+
+function handleQueueClick(e) {
+    const button = e.target.closest('button[data-action]');
+    if (!button) return;
+    const job = jobs.find(item => item.id === Number(button.dataset.job));
+    if (!job) return;
+    const action = button.dataset.action;
+    if (action === 'select') {
+        selectedJobId = job.id;
+    } else if (action === 'download') {
+        downloadJob(job);
+        return;
+    } else if (action === 'retry') {
+        resetJob(job);
+        // A running queue picks it up on its own; otherwise Translate does.
+    } else if (action === 'remove') {
+        if (job === activeJob) return;
+        if (job.result && !job.downloaded && !confirm(`${job.path} has a translation that was not downloaded. Remove it anyway?`)) return;
+        jobs = jobs.filter(item => item !== job);
+        if (selectedJobId === job.id) selectedJobId = jobs.length ? jobs[0].id : null;
+    }
+    renderWorkspace();
+}
+
+function clearQueue() {
+    if (isTranslating) return;
+    const unsaved = jobs.filter(job => job.result && !job.downloaded).length;
+    if (unsaved && !confirm(`${unsaved === 1 ? 'A translated file has' : `${unsaved} translated files have`} not been downloaded. Clear the list anyway?`)) return;
+    jobs = [];
+    selectedJobId = null;
+    showDropStatus('');
+    elements.progressCard.classList.add('hidden');
+    renderWorkspace();
+}
+
+// Puts a file back in the queue. A result it already has stays downloadable
+// until a new run replaces it, so a retry that fails or is stopped never
+// loses the earlier translation.
+function resetJob(job) {
+    if (job.status !== 'queued' && job.status !== 'translating') job.previousStatus = job.result ? job.status : null;
+    job.status = 'queued';
+    job.doneChunks = 0;
+    job.error = '';
+    job.blockCount = prepareBlocks(job.content).length;
+}
+
+// A rerun failed or stopped: go back to the earlier result if there is one.
+function restoreJob(job, message) {
+    if (job.result && job.previousStatus) {
+        job.status = job.previousStatus;
+        job.error = message ? `${message}; the earlier ${job.langCode} result is kept` : '';
+    } else {
+        job.status = message ? 'failed' : 'queued';
+        job.error = message || '';
+    }
 }
 
 function parseSRT(content) {
@@ -722,7 +1015,7 @@ function thinkingRequestFields(provider, model, level) {
 }
 
 function isReadyToTranslate() {
-    if (!srtContent || isTranslating) return false;
+    if (isTranslating || jobs.length === 0) return false;
     if (elements.apiProvider.value === 'openai') {
         return Boolean(chatCompletionsUrl(elements.apiBaseUrl.value) && elements.customModel.value.trim());
     }
@@ -731,13 +1024,21 @@ function isReadyToTranslate() {
 
 function updateTranslateButton() {
     elements.translateBtn.disabled = !isReadyToTranslate();
+    updateTranslateButtonText();
     const url = elements.apiBaseUrl.value.trim();
     elements.apiBaseUrl.setAttribute('aria-invalid', String(Boolean(url) && !chatCompletionsUrl(url)));
 }
 
 function updateTranslateButtonText() {
     const lang = elements.targetLanguage.value;
-    elements.translateBtnText.textContent = `Translate to ${lang}`;
+    const queued = jobs.filter(job => job.status === 'queued').length;
+    if (isTranslating) {
+        elements.translateBtnText.textContent = queued ? `Translating, ${queued} more queued` : 'Translating...';
+    } else if (queued === 0 && jobs.length > 1) {
+        elements.translateBtnText.textContent = `Translate all ${jobs.length} files again to ${lang}`;
+    } else {
+        elements.translateBtnText.textContent = queued > 1 ? `Translate ${queued} files to ${lang}` : `Translate to ${lang}`;
+    }
 }
 
 function log(message, type = 'info') {
@@ -865,7 +1166,7 @@ function parseMarkedTranslation(blocks, translatedText) {
     return result;
 }
 
-async function translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel) {
+async function translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel, stopSignal) {
     // Extract text with block markers
     const markedText = extractTextWithMarkers(chunk);
     const systemPrompt = buildSystemPrompt(targetLanguage, customInstructions);
@@ -881,6 +1182,8 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
         console.log(`[Chunk ${index + 1}] TIMEOUT - aborting request`);
         controller.abort();
     }, timeoutMs);
+    const onStop = () => controller.abort();
+    stopSignal?.addEventListener('abort', onStop);
 
     try {
         let response;
@@ -996,33 +1299,42 @@ async function translateChunk(chunk, index, apiKey, model, targetLanguage, custo
     } catch (error) {
         clearTimeout(timeoutId);
         console.log(`[Chunk ${index + 1}] Error:`, error.name, error.message);
+        if (stopSignal?.aborted) throw stopSignal.reason;
         if (error.name === 'AbortError') {
             throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
         }
         throw error;
+    } finally {
+        stopSignal?.removeEventListener('abort', onStop);
     }
 }
 
-// Wraps a line in RLE/PDF and prepends RLM so players such as VLC lay out
-// Arabic and Persian text right to left.
-function formatRTLLine(line) {
-    if (line.trim() === '') return line;
-    let formatted = line;
-    if (!formatted.startsWith(RLE)) formatted = RLE + formatted;
-    if (!formatted.endsWith(PDF)) formatted += PDF;
-    if (!formatted.startsWith(RLM)) formatted = RLM + formatted;
-    return formatted;
+// Resolves after ms, or rejects at once when the stop signal fires.
+function waitOrStop(ms, stopSignal) {
+    return new Promise((resolve, reject) => {
+        if (stopSignal?.aborted) return reject(stopSignal.reason);
+        const onStop = () => {
+            clearTimeout(timer);
+            reject(stopSignal.reason);
+        };
+        const timer = setTimeout(() => {
+            stopSignal?.removeEventListener('abort', onStop);
+            resolve();
+        }, ms);
+        stopSignal?.addEventListener('abort', onStop, { once: true });
+    });
 }
 
 // Retry wrapper with exponential backoff, and smart rate-limit (429) delay handling
-async function translateChunkWithRetry(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel, onRetry) {
+async function translateChunkWithRetry(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel, onRetry, stopSignal) {
     let lastError;
     let maxAttempts = MAX_RETRIES;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            return await translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel);
+            return await translateChunk(chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel, stopSignal);
         } catch (error) {
+            if (stopSignal?.aborted) throw stopSignal.reason;
             lastError = error;
 
             if (attempt < maxAttempts) {
@@ -1052,7 +1364,7 @@ async function translateChunkWithRetry(chunk, index, apiKey, model, targetLangua
                 }
 
                 onRetry(index, attempt, delay, error.message);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                await waitOrStop(delay, stopSignal);
             }
         }
     }
@@ -1064,44 +1376,156 @@ async function translateChunkWithRetry(chunk, index, apiKey, model, targetLangua
 // Main Translation Flow
 // ============================================
 
-async function startTranslation() {
-    if (!isReadyToTranslate()) return;
-    isTranslating = true;
-    try {
-        await runTranslation();
-    } finally {
-        isTranslating = false;
-        updateTranslateButton();
+class StopRequested extends Error {
+    constructor() {
+        super('Stopped');
+        this.name = 'StopRequested';
     }
 }
 
-async function runTranslation() {
-    const apiKey = elements.apiKey.value.trim();
+// Translates queued files one after another until none is left. Files added
+// or retried while it runs join the queue. Every file has its own try/catch,
+// so an error in one marks only that file failed and the next one starts.
+async function startTranslation() {
+    if (!isReadyToTranslate()) return;
+    // Nothing queued: translate every file again, e.g. into another language.
+    if (!jobs.some(job => job.status === 'queued')) {
+        const unsaved = jobs.filter(job => job.result && !job.downloaded).length;
+        if (unsaved && !confirm(`${unsaved === 1 ? 'A translated file has' : `${unsaved} translated files have`} not been downloaded. Translate again and replace ${unsaved === 1 ? 'it' : 'them'}?`)) return;
+        jobs.forEach(resetJob);
+    }
+    isTranslating = true;
+    queueAbort = new AbortController();
+    lockSettings(true);
+    const settings = translationSettings();
+    elements.stopBtn.classList.remove('hidden');
+    elements.logContainer.innerHTML = '';
+    log(`Starting translation to ${settings.targetLanguage}...`, 'info');
+    log(settings.thinkingLevel ? `Model: ${settings.model} | Thinking: ${settings.thinkingLevel}` : `Model: ${settings.model}`, 'info');
+    if (settings.provider === 'openai') log(`Endpoint: ${settings.endpoint}`, 'info');
+    renderWorkspace();
+    try {
+        for (;;) {
+            const job = jobs.find(item => item.status === 'queued');
+            if (!job || queueAbort.signal.aborted) break;
+            await runJob(job, settings, queueAbort.signal);
+        }
+    } finally {
+        activeJob = null;
+        isTranslating = false;
+        queueAbort = null;
+        elements.stopBtn.classList.add('hidden');
+        lockSettings(false);
+        const ready = jobs.filter(job => job.result).length;
+        const failed = jobs.filter(job => job.status === 'failed').length;
+        if (jobs.length > 1) log(`Queue finished: ${ready} of ${jobs.length} files ready${failed ? `, ${failed} failed` : ''}`, failed ? 'error' : 'success');
+        renderWorkspace();
+    }
+}
 
-    // Get settings
+// A run uses the settings it started with, so the fields that shape a
+// translation are locked until it ends. Break long lines stays free: it
+// applies on download.
+function lockSettings(locked) {
+    [elements.apiProvider, elements.apiKey, elements.customModel, elements.apiBaseUrl, elements.thinkingLevel,
+        elements.targetLanguage, elements.chunkSize, elements.parallelRequests, elements.customInstructions,
+        elements.mergeSubtitles, elements.optimizeTimings, elements.importSettingsBtn].forEach(control => { control.disabled = locked; });
+    dropdowns.forEach(dropdown => dropdown.sync());
+}
+
+function stopTranslation() {
+    if (!queueAbort || queueAbort.signal.aborted) return;
+    queueAbort.abort(new StopRequested());
+    log('Stopping...', 'error');
+}
+
+// Read once per run, so changing a field mid-queue cannot give one batch two
+// languages or send half the files to another server.
+function translationSettings() {
     const provider = elements.apiProvider.value;
     const defaultModel = provider === 'openrouter' ? DEFAULT_MODEL_OPENROUTER : DEFAULT_MODEL_GEMINI;
-    const model = elements.customModel.value.trim() || defaultModel;
-    const endpoint = provider === 'openai' ? chatCompletionsUrl(elements.apiBaseUrl.value) : null;
-    const targetLanguage = elements.targetLanguage.value;
-    const targetChunkSize = parseInt(elements.chunkSize.value) || 50;
-    const maxParallel = parseInt(elements.parallelRequests.value) || DEFAULT_PARALLEL;
-    const customInstructions = elements.customInstructions.value;
-    const thinkingLevel = elements.thinkingLevel.value;
+    return {
+        apiKey: elements.apiKey.value.trim(),
+        provider,
+        model: elements.customModel.value.trim() || defaultModel,
+        endpoint: provider === 'openai' ? chatCompletionsUrl(elements.apiBaseUrl.value) : null,
+        targetLanguage: elements.targetLanguage.value,
+        targetChunkSize: parseInt(elements.chunkSize.value) || 50,
+        maxParallel: parseInt(elements.parallelRequests.value) || DEFAULT_PARALLEL,
+        customInstructions: elements.customInstructions.value,
+        thinkingLevel: elements.thinkingLevel.value,
+        mergeSubtitles: elements.mergeSubtitles.checked,
+        optimizeTimings: elements.optimizeTimings.checked
+    };
+}
 
-    // Create chunks
-    const chunks = createSmartChunks(srtBlocks, targetChunkSize);
+// Updates one row's text only; rebuilding the list would move keyboard focus.
+function updateJobDetail(job, text) {
+    const detail = elements.queueList.querySelector(`.queue-item[data-job="${job.id}"] .queue-detail`);
+    if (detail) detail.textContent = text;
+}
 
-    // Setup UI
+async function runJob(job, settings, stopSignal) {
+    activeJob = job;
+    job.status = 'translating';
+    job.error = '';
+    job.doneChunks = 0;
+    selectedJobId = job.id;
+    renderWorkspace();
+    const position = jobs.indexOf(job) + 1;
+    elements.progressTitle.textContent = jobs.length > 1 ? `${job.path} (${position} of ${jobs.length})` : 'Progress';
+    log(`File: ${job.path}`, 'info');
+
+    try {
+        const blocks = prepareBlocks(job.content, settings);
+        if (blocks.length === 0) throw new Error('No subtitle blocks found');
+        // Progress goes into its own counter, so a kept earlier result keeps its numbers.
+        let total = 0;
+        const outcome = await translateBlocks(blocks, settings, stopSignal, (done) => {
+            job.doneChunks = done;
+            updateJobDetail(job, `${done} of ${total} chunks`);
+        }, (count) => {
+            total = count;
+            updateJobDetail(job, `0 of ${total} chunks`);
+        });
+        if (outcome.completed === 0) {
+            restoreJob(job, outcome.lastError ? `Every chunk failed: ${outcome.lastError}` : 'Every chunk failed');
+        } else {
+            job.result = outcome.srt;
+            job.langCode = getLanguageCode(settings.targetLanguage);
+            job.failedChunks = outcome.failed;
+            job.totalChunks = outcome.total;
+            job.downloaded = false;
+            job.previousStatus = null;
+            job.status = outcome.failed ? 'partial' : 'done';
+        }
+        log(`${job.path}: ${outcome.completed} chunks translated, ${outcome.failed} failed`, outcome.failed ? 'error' : 'success');
+    } catch (error) {
+        if (error instanceof StopRequested) {
+            // Unfinished work is dropped; the file waits for the next run.
+            job.status = 'queued';
+            job.doneChunks = 0;
+            log(`${job.path}: stopped, back in the queue`, 'error');
+        } else {
+            restoreJob(job, error.message || String(error));
+            log(`${job.path} FAILED: ${error.message || error}`, 'error');
+        }
+    } finally {
+        activeJob = null;
+        renderWorkspace();
+    }
+}
+
+// Translates one file's blocks with bounded parallelism. A chunk that fails
+// after its retries keeps its original text, so the file is always complete.
+async function translateBlocks(blocks, settings, stopSignal, onProgress, onChunks) {
+    const { apiKey, provider, model, endpoint, targetLanguage, targetChunkSize, maxParallel, customInstructions, thinkingLevel } = settings;
+    const chunks = createSmartChunks(blocks, targetChunkSize);
+    onChunks(chunks.length);
+
     elements.progressCard.classList.remove('hidden');
-    elements.downloadBtn.classList.add('hidden');
-    elements.translateBtn.disabled = true;
-    elements.logContainer.innerHTML = '';
-
     elements.totalChunks.textContent = chunks.length;
     updateProgress(0, 0, chunks.length);
-
-    // Create chunk indicators
     elements.chunksGrid.innerHTML = '';
     chunks.forEach((_, i) => {
         const indicator = document.createElement('div');
@@ -1110,111 +1534,128 @@ async function runTranslation() {
         indicator.textContent = i + 1;
         elements.chunksGrid.appendChild(indicator);
     });
-
-    log(`Starting translation to ${targetLanguage}...`, 'info');
-    log(thinkingLevel ? `Model: ${model} | Thinking: ${thinkingLevel}` : `Model: ${model}`, 'info');
-    if (provider === 'openai') log(`Endpoint: ${endpoint}`, 'info');
     log(`Chunks: ${chunks.length} | Size: ~${targetChunkSize} | Parallel: ${maxParallel}`, 'info');
 
     let completed = 0;
     let failed = 0;
+    let lastError = '';
     const results = new Array(chunks.length).fill(null);
 
-    // Process a single chunk
     async function processChunk(chunk, index) {
         setChunkStatus(index, 'processing');
-        const blockCount = chunk.length;
         const textLength = chunk.reduce((sum, b) => sum + b.text.join(' ').length, 0);
-
         try {
-            log(`Chunk ${index + 1} starting (${blockCount} blocks, ${textLength} chars)...`, 'info');
-
-            const translated = await translateChunkWithRetry(
-                chunk,
-                index,
-                apiKey,
-                model,
-                targetLanguage,
-                customInstructions,
-                provider,
-                endpoint,
-                thinkingLevel,
-                (idx, attempt, delay, errorMsg) => {
+            log(`Chunk ${index + 1} starting (${chunk.length} blocks, ${textLength} chars)...`, 'info');
+            results[index] = await translateChunkWithRetry(
+                chunk, index, apiKey, model, targetLanguage, customInstructions, provider, endpoint, thinkingLevel,
+                (idx, attempt, delay) => {
                     setChunkStatus(idx, 'error');
-                    const waitSec = Math.round(delay / 1000);
-                    log(`Chunk ${idx + 1} rate limited/failed. Retrying (attempt ${attempt}) in ${waitSec}s...`, 'error');
-                    setTimeout(() => setChunkStatus(idx, 'processing'), 100);
-                }
+                    log(`Chunk ${idx + 1} rate limited/failed. Retrying (attempt ${attempt}) in ${Math.round(delay / 1000)}s...`, 'error');
+                    setTimeout(() => { if (!stopSignal.aborted) setChunkStatus(idx, 'processing'); }, 100);
+                },
+                stopSignal
             );
-
-            results[index] = translated;
             completed++;
             setChunkStatus(index, 'done');
             log(`Chunk ${index + 1} completed`, 'success');
         } catch (error) {
+            if (stopSignal.aborted) throw stopSignal.reason;
             failed++;
+            lastError = error.message;
             setChunkStatus(index, 'error');
             log(`Chunk ${index + 1} FAILED: ${error.message}`, 'error');
             results[index] = blocksToSRT(chunk);
         }
-
         updateProgress(completed, failed, chunks.length);
+        onProgress(completed, failed);
     }
 
-    // Process all chunks with controlled concurrency
-    const processing = new Set();
+    // Workers pull the next chunk until none is left. allSettled waits for
+    // every request, so a stop never leaves one writing into the next file's
+    // progress grid.
     let nextIndex = 0;
-
-    async function processNext() {
-        while (nextIndex < chunks.length) {
+    const worker = async () => {
+        while (nextIndex < chunks.length && !stopSignal.aborted) {
             const index = nextIndex++;
-            const chunk = chunks[index];
-
-            const promise = processChunk(chunk, index).finally(() => {
-                processing.delete(promise);
-            });
-            processing.add(promise);
-
-            // If at max concurrency, wait for one to complete
-            if (processing.size >= maxParallel) {
-                await Promise.race(processing);
-            }
+            await processChunk(chunks[index], index);
         }
-        // Wait for remaining
-        await Promise.all(processing);
-    }
+    };
+    const outcomes = await Promise.allSettled(Array.from({ length: Math.min(maxParallel, chunks.length) }, worker));
+    if (stopSignal.aborted) throw stopSignal.reason;
+    const crash = outcomes.find(outcome => outcome.status === 'rejected');
+    if (crash) throw crash.reason;
 
-    await processNext();
-
-    // Merge results
-    translatedResult = results.join('\n\n');
-
-    const status = completed === chunks.length ? 'success' : 'error';
-    log(`Translation complete! ${completed} successful, ${failed} failed`, status);
-
-    elements.downloadBtn.classList.remove('hidden');
+    return { srt: results.join('\n\n'), completed, failed, lastError, total: chunks.length };
 }
 
 // ============================================
 // Download
 // ============================================
 
-function downloadResult() {
-    const lang = elements.targetLanguage.value;
-    const langCode = getLanguageCode(lang);
+function outputName(job) {
+    return /\.srt$/i.test(job.name) ? job.name.replace(/\.srt$/i, `_${job.langCode}.srt`) : `${job.name}_${job.langCode}.srt`;
+}
 
-    const output = elements.wrapLines.checked ? wrapSRT(translatedResult) : translatedResult;
-    const blob = new Blob([output], { type: 'text/plain;charset=utf-8' });
+function outputPath(job) {
+    const folder = job.path.includes('/') ? job.path.slice(0, job.path.lastIndexOf('/') + 1) : '';
+    return folder + outputName(job);
+}
+
+// Line breaking applies at download time, so the switch can change after translating.
+function outputText(job) {
+    return elements.wrapLines.checked ? wrapSRT(job.result) : job.result;
+}
+
+function saveBlob(blob, fileName) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = originalFileName.replace('.srt', `_${langCode}.srt`);
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Some browsers start the download asynchronously; revoke a little later.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
-    log(`Downloaded: ${a.download}`, 'success');
+function downloadJob(job) {
+    if (!job.result) return;
+    saveBlob(new Blob([outputText(job)], { type: 'text/plain;charset=utf-8' }), outputName(job));
+    job.downloaded = true;
+    log(`Downloaded: ${outputName(job)}`, 'success');
+}
+
+// One finished file downloads as is; several go into one ZIP that keeps the
+// folder layout they were dropped with. Failed files are left out, and
+// partly translated ones go in, with their untranslated chunks as they were.
+function downloadAll() {
+    const ready = jobs.filter(job => job.result);
+    if (ready.length === 0) return;
+    if (ready.length === 1) {
+        downloadJob(ready[0]);
+        return;
+    }
+    let zip;
+    try {
+        zip = createZip(ready.map(job => ({ name: outputPath(job), data: outputText(job) })));
+    } catch (error) {
+        // The finished files stay downloadable one by one from the list.
+        log(`Could not build the ZIP: ${error.message}. Download the files one by one instead.`, 'error');
+        elements.progressCard.classList.remove('hidden');
+        return;
+    }
+    const codes = [...new Set(ready.map(job => job.langCode))];
+    const zipName = `translated_${codes.length === 1 ? codes[0] : 'subtitles'}.zip`;
+    saveBlob(new Blob([zip], { type: 'application/zip' }), zipName);
+    ready.forEach(job => { job.downloaded = true; });
+    log(`Downloaded: ${zipName} (${ready.length} files)`, 'success');
+}
+
+function updateDownloadButton() {
+    const ready = jobs.filter(job => job.result).length;
+    elements.downloadBtn.classList.toggle('hidden', ready === 0);
+    if (ready > 1) elements.downloadBtnText.textContent = `Download all (${ready} files, ZIP)`;
+    else elements.downloadBtnText.textContent = jobs.length > 1 ? 'Download the finished file' : 'Download translated SRT';
 }
 
 function getLanguageCode(language) {
@@ -1328,130 +1769,6 @@ function mergeShortSubtitles(blocks, maxCombinedWords = 15, maxCombinedChars = 8
     for (let idx = 0; idx < blocks.length; idx++) {
         blocks[idx].index = idx + 1;
     }
-}
-
-// ============================================
-// Line Wrapping
-// ============================================
-
-// Formatting tags: HTML-style tags that start with a letter (so "a < b" is
-// text) and ASS override blocks such as {\an8}.
-const TAG_PATTERN = '<\\/?[A-Za-z][^<>]*>|\\{\\\\[^}]*\\}';
-const TAGS = new RegExp(TAG_PATTERN, 'g');
-// Words split on ordinary whitespace only: no-break spaces (French "?"
-// spacing) stay, and a tag with spaces inside stays one word.
-const WORDS = new RegExp(`(?:${TAG_PATTERN}|[^ \\t\\r\\n])+`, 'g');
-const LEADING_DASH = new RegExp(`^(?:${TAG_PATTERN})*-`);
-// A new speaker starts at " - " only after a finished sentence, so a
-// parenthetical dash inside one sentence stays where it is.
-const SPEAKER_BREAK = new RegExp(`(?<=[.!?\\u2026]["'\\u201D\\u00BB)]*(?:${TAG_PATTERN})*)[ \\t]+(?=(?:${TAG_PATTERN})*-[ \\t])`);
-const ABBREVIATION = /(?:^|\s)(?:Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|vs|etc|Nr)\.$/i;
-
-// Length as shown on screen: tags, bidi marks and combining marks (Arabic
-// vowel signs, Devanagari and Thai diacritics) take no space of their own.
-function visibleLength(text) {
-    return Array.from(text.replace(TAGS, '').replace(/[\u200E\u200F\u202A-\u202E]|\p{M}/gu, '')).length;
-}
-
-// A line of only digits would read as a block number when the file is loaded again.
-function isNumberLine(line) {
-    return /^\d+$/.test(line);
-}
-
-// Breaks one line into as few lines as fit maxChars, keeping them about
-// equally long. Two-line splits prefer a break after punctuation. A dash
-// standing alone sticks to the word before it, so no line starts with one
-// and looks like a new speaker. Text without spaces (Chinese, Japanese,
-// Thai) is left as it is.
-function splitLine(text, maxChars = MAX_LINE_CHARS) {
-    const words = [];
-    for (const token of text.match(WORDS) || []) {
-        if (/^[-\u2013\u2014]$/.test(token) && words.length) words[words.length - 1] += ` ${token}`;
-        else words.push(token);
-    }
-    const total = visibleLength(words.join(' '));
-    if (total <= maxChars || words.length < 2) return [words.join(' ')];
-
-    const greedy = (width) => {
-        const lines = [];
-        let current = '';
-        for (const word of words) {
-            const candidate = current ? `${current} ${word}` : word;
-            if (current && visibleLength(candidate) > width) {
-                lines.push(current);
-                current = word;
-            } else {
-                current = candidate;
-            }
-        }
-        lines.push(current);
-        return lines;
-    };
-
-    const twoLines = () => {
-        let best = null;
-        for (let i = 1; i < words.length; i++) {
-            const top = words.slice(0, i).join(' ');
-            const bottom = words.slice(i).join(' ');
-            if (Math.max(visibleLength(top), visibleLength(bottom)) > maxChars) continue;
-            if (isNumberLine(top) || isNumberLine(bottom)) continue;
-            const afterPunctuation = /[,.;:!?\u060C\u061B\u061F]["'\u201D\u00BB)]*$/.test(top) && !ABBREVIATION.test(top);
-            const score = Math.abs(visibleLength(top) - visibleLength(bottom)) - (afterPunctuation ? 8 : 0);
-            if (!best || score < best.score) best = { lines: [top, bottom], score };
-        }
-        return best && best.lines;
-    };
-
-    // The narrowest width at which greedy filling needs only lineCount lines.
-    const balanced = (lineCount) => {
-        for (let width = Math.ceil(total / lineCount); width <= maxChars; width++) {
-            const lines = greedy(width);
-            if (lines.length <= lineCount && !lines.some(isNumberLine)) return lines;
-        }
-        return null;
-    };
-
-    for (let lineCount = Math.ceil(total / maxChars); lineCount <= words.length; lineCount++) {
-        const lines = lineCount === 2 ? twoLines() : balanced(lineCount);
-        if (lines) return lines;
-    }
-    return greedy(maxChars);
-}
-
-// Rewraps a block's lines when any of them is too long. Text over about 84
-// characters needs three lines, since dropping words is not an option.
-// Dialogue keeps one line per speaker: translation joins a block into one
-// line, so a line that starts with a dash is split again where a new
-// speaker's dash follows a finished sentence. Other lines are joined and
-// rebalanced.
-function wrapSubtitleLines(lines, maxChars = MAX_LINE_CHARS) {
-    if (lines.every(line => visibleLength(line) <= maxChars)) return lines;
-    if (lines.length > 1 && lines.every(line => LEADING_DASH.test(line))) {
-        return lines.flatMap(line => wrapSubtitleLines([line], maxChars));
-    }
-    const joined = lines.join(' ');
-    if (LEADING_DASH.test(joined)) {
-        const speakers = joined.split(SPEAKER_BREAK);
-        if (speakers.length > 1) return speakers.flatMap(line => splitLine(line, maxChars));
-    }
-    return splitLine(joined, maxChars);
-}
-
-// Applies wrapSubtitleLines to the translated SRT, whose blocks are always
-// "index, timestamp, text lines" separated by one blank line. It splits on
-// that instead of calling parseSRT, which would read a line of digits as a
-// new block. Arabic and Persian lines carry bidi marks per line, so those are
-// stripped before wrapping and put back on every new line.
-function wrapSRT(content) {
-    return content.split(/\n\n+/).map(block => {
-        const [index, timestamp, ...text] = block.split('\n');
-        if (text.length === 0) return block;
-        const isRTL = text.some(line => line.startsWith(RLM));
-        const plain = isRTL ? text.map(line => line.replace(/[\u200F\u202B\u202C]/g, '')) : text;
-        const wrapped = wrapSubtitleLines(plain);
-        if (wrapped === plain) return block;
-        return [index, timestamp, ...(isRTL ? wrapped.map(formatRTLLine) : wrapped)].join('\n');
-    }).join('\n\n');
 }
 
 function parseTimestampRange(timestampStr) {

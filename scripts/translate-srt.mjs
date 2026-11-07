@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // Command-line version of the web app. Parsing, chunking, the system prompt,
-// marker handling and RTL formatting mirror src/app.js; keep them in sync.
+// marker handling mirror src/app.js and RTL formatting mirrors src/wrap.js;
+// keep them in sync.
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';

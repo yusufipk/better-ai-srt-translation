@@ -53,6 +53,7 @@ function enhanceSelect(select) {
     function sync() {
         const opt = select.options[select.selectedIndex];
         button.textContent = opt ? opt.textContent : '';
+        button.disabled = select.disabled;
         options.forEach((li, i) => li.setAttribute('aria-selected', String(i === select.selectedIndex)));
     }
 
