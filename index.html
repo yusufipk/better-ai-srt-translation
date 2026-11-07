@@ -185,13 +185,13 @@
         </aside>
 
         <div class="workspace">
-            <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Choose an SRT file">
+            <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Add SRT files">
                 <div class="drop-empty" id="dropEmpty">
                     <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M12 15V4m0 0L8 8m4-4 4 4" />
                         <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
                     </svg>
-                    <p class="drop-title">Drop an .srt file here or click to choose one</p>
+                    <p class="drop-title">Drop .srt files or a folder here, or click to choose files</p>
                 </div>
                 <div class="file-head">
                     <p class="filename hidden" id="fileName"></p>
@@ -199,15 +199,28 @@
                 </div>
                 <ol class="preview hidden" id="filePreview" aria-label="Subtitle blocks"></ol>
             </div>
-            <input type="file" id="fileInput" accept=".srt" class="hidden">
+            <input type="file" id="fileInput" accept=".srt" multiple class="hidden">
+            <p class="drop-status" id="dropStatus" role="status"></p>
 
-            <button class="btn btn-primary" id="translateBtn" disabled>
-                <span id="translateBtnText">Translate</span>
-            </button>
+            <section class="queue hidden" id="queueCard" aria-label="Files">
+                <div class="queue-head">
+                    <h2>Files</h2>
+                    <p class="queue-summary" id="queueSummary"></p>
+                    <button type="button" class="btn btn-ghost btn-small" id="clearQueueBtn">Clear list</button>
+                </div>
+                <ul class="queue-list" id="queueList"></ul>
+            </section>
+
+            <div class="actions">
+                <button class="btn btn-primary" id="translateBtn" disabled>
+                    <span id="translateBtnText">Translate</span>
+                </button>
+                <button type="button" class="btn btn-stop hidden" id="stopBtn" title="Cancels the file being translated and puts it back in the queue. Finished files stay downloadable.">Stop</button>
+            </div>
 
             <section class="progress hidden" id="progressCard">
                 <div class="progress-head">
-                    <h2>Progress</h2>
+                    <h2 id="progressTitle">Progress</h2>
                     <p class="progress-counts" aria-live="polite">
                         <span><strong id="completedChunks">0</strong> of <strong id="totalChunks">0</strong> chunks</span>
                         <span class="failed-count"><strong id="failedChunks">0</strong> failed</span>
@@ -229,7 +242,7 @@
                     <path d="M12 4v11m0 0-4-4m4 4 4-4" />
                     <path d="M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />
                 </svg>
-                Download translated SRT
+                <span id="downloadBtnText">Download translated SRT</span>
             </button>
         </div>
     </main>
@@ -237,6 +250,7 @@
     <script src="src/select.js"></script>
     <script src="src/combobox.js"></script>
     <script src="src/wrap.js"></script>
+    <script src="src/zip.js"></script>
     <script src="src/app.js"></script>
 </body>
 

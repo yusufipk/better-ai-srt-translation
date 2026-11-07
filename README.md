@@ -8,8 +8,8 @@ Translate `.srt` subtitle files with Gemini (Google AI Studio), any model on Ope
 
 1. Open `index.html` in a browser. There is nothing to install or build.
 2. Pick a provider and paste its API key ([Google AI Studio](https://aistudio.google.com/app/apikey) or [OpenRouter](https://openrouter.ai/keys)). For OpenAI-compatible, enter the base URL (e.g. `http://localhost:11434/v1` for Ollama). Pick a model from the list the provider returns or type one; the server must allow browser requests (CORS).
-3. Drop an `.srt` file, choose the target language and click Translate.
-4. Download the result. Failed chunks keep their original text, so the file is always complete.
+3. Drop `.srt` files or a whole folder, choose the target language and click Translate. Files are translated one after another.
+4. Download each file as it finishes, or all of them as one ZIP. Failed chunks keep their original text, so a file is always complete, and a file that fails entirely does not hold up the rest.
 
 To translate a whole folder from the terminal, run `node scripts/translate-srt.mjs --help` (Node.js 18 or newer, no dependencies); `node scripts/wrap-srt.mjs file.srt` only breaks long lines, without translating.
 
