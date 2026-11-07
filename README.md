@@ -11,7 +11,7 @@ Translate `.srt` subtitle files with Gemini (Google AI Studio), any model on Ope
 3. Drop an `.srt` file, choose the target language and click Translate.
 4. Download the result. Failed chunks keep their original text, so the file is always complete.
 
-To translate a whole folder from the terminal, run `node scripts/translate-srt.mjs --help` (Node.js 18 or newer, no dependencies).
+To translate a whole folder from the terminal, run `node scripts/translate-srt.mjs --help` (Node.js 18 or newer, no dependencies); `node scripts/wrap-srt.mjs file.srt` only breaks long lines, without translating.
 
 The default model is `gemini-3.1-flash-lite` (`google/gemini-3.1-flash-lite` on OpenRouter). Leave Parallel requests at 5 on the Gemini free tier to stay under its rate limit; paid keys can go higher. Rate-limited requests wait out the cooldown Google reports and retry on their own.
 
